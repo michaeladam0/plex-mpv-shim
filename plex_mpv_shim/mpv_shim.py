@@ -85,6 +85,12 @@ def main():
         actionThread.stop()
         gdm.stop_all()
 
+    # Force the process to exit. Third-party background threads (notably the
+    # external-mpv IPC reader in python-mpv-jsonipc) can be non-daemon and
+    # outlive the cleanup above, leaving run.exe alive after the tray app is
+    # closed. Everything we own has been torn down by this point.
+    os._exit(0)
+
 if __name__ == "__main__":
     main()
 

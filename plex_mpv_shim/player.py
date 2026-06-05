@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import uuid
 import requests
 import urllib.parse
 
@@ -75,7 +76,6 @@ class PlayerManager(object):
     ``media`` are thread safe.
     """
     def __init__(self):
-        mpv_options = OrderedDict()
         self._media_item = None
         self._lock = RLock()
         self._finished_lock = Lock()
@@ -86,11 +86,31 @@ class PlayerManager(object):
         self.external_subtitles = {}
         self.external_subtitles_rev = {}
         self.url = None
+        # Plex Companion (provider-playback) per-playback session identifiers,
+        # reported on the /player/proxy/timeline push.
+        self.playback_session_id = None
+        self.playback_id = None
         self.evt_queue = Queue()
         self.is_in_intro = False
         self.is_in_credits = False
         self.intro_has_triggered = False
         self.credits_has_triggered = False
+        # Set when the underlying mpv core is gone -- e.g. the user closed the
+        # external mpv window, which terminates the mpv process. We recreate it
+        # lazily on the next playback request.
+        self._player_shutdown = False
+
+        self._init_mpv()
+
+    def _init_mpv(self):
+        """
+        (Re)create the mpv instance and (re)register every key/event binding.
+
+        Runs at startup and again to recover when the mpv core goes away:
+        closing the external mpv window terminates the mpv process, so the next
+        playback has to spin up a fresh one.
+        """
+        mpv_options = OrderedDict()
 
         if is_using_ext_mpv:
             mpv_options.update(
@@ -371,18 +391,37 @@ class PlayerManager(object):
 
     @synchronous('_lock')
     def _play_media(self, media_item, url, offset=0):
+        # If the mpv core went away (external window closed), bring it back
+        # before doing anything that touches it.
+        if self._player_shutdown:
+            log.info("PlayerManager::_play_media mpv core was shut down; reinitializing.")
+            self._init_mpv()
+            self._player_shutdown = False
+
         self.url = url
         self.menu.hide_menu()
 
         if settings.log_decisions:
             log.debug("Playing: {0}".format(url))
 
-        self._player.play(self.url)
-        self._player.wait_for_property("duration")
+        try:
+            self._player.play(self.url)
+            self._player.wait_for_property("duration")
+        except Exception:
+            # Fallback: the core was dead but we hadn't flagged it. Recreate
+            # it and try once more before giving up.
+            log.warning("PlayerManager::_play_media playback failed; reinitializing mpv and retrying.", exc_info=True)
+            self._init_mpv()
+            self._player_shutdown = False
+            self._player.play(self.url)
+            self._player.wait_for_property("duration")
         if settings.fullscreen:
             self._player.fs = True
         self._player.force_media_title = media_item.get_proper_title()
         self._media_item  = media_item
+        # Fresh Companion playback session for this item.
+        self.playback_session_id = str(uuid.uuid4())
+        self.playback_id = str(uuid.uuid4())
         self.is_in_intro = False
         self.is_in_credits = False
         self.intro_has_triggered = False
@@ -426,23 +465,72 @@ class PlayerManager(object):
 
     @synchronous('_lock')
     def stop(self, playend=False):
-        if not playend and (not self._media_item or self._player.playback_abort):
+        # Note: we must NOT early-return just because playback_abort is set.
+        # Closing the mpv window (CLOSE_WIN) aborts playback *before*
+        # handle_stop() runs, so playback_abort is already True here. The old
+        # guard returned early in that case and Plex never received the stop,
+        # leaving the session running past EOF. As long as a media item is
+        # active we proceed through the same teardown the EOF path uses.
+        if not self._media_item:
             self.exec_stop_cmd()
             return
 
         if not playend:
             log.debug("PlayerManager::stop stopping playback of %s" % self._media_item)
 
+        # Capture the final position and hand it to the timeline manager so it
+        # can send an authoritative state=stopped to the Plex server. This must
+        # happen before _media_item is cleared below.
+        self._send_terminal_stop()
+
         if self._media_item.media_type == MediaType.VIDEO:
             self._media_item.terminate_transcode()
 
         self._media_item  = None
-        self._player.command("stop")
-        self._player.pause = False
+        # The core may already be torn down (window closed); don't let that
+        # stop us from having notified Plex above.
+        try:
+            self._player.command("stop")
+            self._player.pause = False
+        except Exception:
+            # The core failing here means it is gone (e.g. the external mpv
+            # window was closed). Flag it so the next playback recreates it.
+            log.debug("PlayerManager::stop player appears to be shut down", exc_info=True)
+            self._player_shutdown = True
         self.timeline_handle()
 
         if not playend:
             self.exec_stop_cmd()
+
+    def _send_terminal_stop(self):
+        """
+        Hand the final playback position to the timeline manager so it can send
+        an authoritative state=stopped to the Plex server. Without this the
+        server keeps extrapolating the playhead from wall-clock time and the
+        session never clears (the playhead ticks past the end of the file and
+        the shim appears wedged until it is restarted).
+        """
+        media_item = self._media_item
+        if not media_item:
+            return
+
+        # The core may already be torn down (window closed -> quit), in which
+        # case reading playback_time raises ShutdownError. Fall back to the
+        # known duration so we still report a sane final position.
+        position_ms = None
+        try:
+            position = self._player.playback_time
+            if position is not None:
+                position_ms = int(position * 1e3)
+        except Exception:
+            pass
+        if position_ms is None:
+            duration = media_item.get_attr("duration")
+            position_ms = int(duration) if duration else 0
+
+        # Imported lazily to avoid a circular import (timeline imports player).
+        from .timeline import timelineManager
+        timelineManager.notify_stopped(media_item, position_ms)
 
     @synchronous('_lock')
     def get_volume(self, percent=False):
@@ -486,7 +574,7 @@ class PlayerManager(object):
             return "paused"
 
         return "playing"
-    
+
     @synchronous('_lock')
     def is_paused(self):
         if not self._player.playback_abort:
@@ -644,7 +732,10 @@ class PlayerManager(object):
     
     def terminate(self):
         self.stop()
-        if is_using_ext_mpv:
-            self._player.terminate()
+        if is_using_ext_mpv and not self._player_shutdown:
+            try:
+                self._player.terminate()
+            except Exception:
+                log.debug("PlayerManager::terminate player already shut down", exc_info=True)
 
 playerManager = PlayerManager()

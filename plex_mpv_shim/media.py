@@ -454,6 +454,15 @@ class Video(MediaItem):
         url = "/library/streams/{0}".format(id)
         return get_plex_url(urllib.parse.urljoin(self.parent.server_url, url))
 
+    def get_video_stream_id(self):
+        """ID of the (selected) video stream, reported in the timeline."""
+        if not self._part_node:
+            return None
+        video = self._part_node.find("./Stream[@streamType='1'][@selected='1']")
+        if video is None:
+            video = self._part_node.find("./Stream[@streamType='1']")
+        return video.get("id") if video is not None else None
+
     def update_position(self, ms):
         """
         Sets the state of the media as "playing" with a progress of ``ms`` milliseconds.
@@ -655,8 +664,14 @@ class Media(XMLCollection):
                 self.has_prev = self.seq > 0
 
     def get_queue_info(self):
+        # Report a clean "/playQueues/N" containerKey. The web app sends it with
+        # a "?own=1" query on playMedia, but real players strip the query in
+        # their timelines; the web player matches its play queue by this string.
+        container_key = self.play_queue
+        if container_key:
+            container_key = container_key.split("?", 1)[0]
         return {
-            "containerKey": self.play_queue,
+            "containerKey": container_key,
             "playQueueID": self.play_queue_xml.tree.find(".").get("playQueueID"),
             "playQueueVersion": self.play_queue_xml.tree.find(".").get("playQueueVersion"),
             "playQueueItemID": self.series[self.seq].get("playQueueItemID")

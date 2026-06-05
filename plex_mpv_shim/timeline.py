@@ -37,6 +37,15 @@ class TimelineManager(threading.Thread):
         self.sending_to_ps   = Lock()
         self.last_server_url = None
 
+        # End-of-playback terminal stop tracking. When playback ends the
+        # active media item is cleared, so we stash the final item/position
+        # here and keep re-announcing a state=stopped timeline for a few
+        # cycles. Without this the Plex server keeps extrapolating the
+        # playhead and the session never terminates.
+        self.terminal_stop_item  = None
+        self.terminal_stop_time  = 0
+        self.terminal_stop_count = 0
+
         threading.Thread.__init__(self)
 
     def stop(self):
@@ -47,18 +56,30 @@ class TimelineManager(threading.Thread):
     def run(self):
         force_next = False
         while not self.halt:
-            if (playerManager._player and playerManager._media_item and (not settings.idle_when_paused
-                or not playerManager.is_paused())) or force_next:
-                if not playerManager.is_paused() or force_next:
+            try:
+                if (playerManager._player and playerManager._media_item and (not settings.idle_when_paused
+                    or not playerManager.is_paused())) or force_next:
+                    if force_next or not playerManager.is_paused():
+                        self.SendTimelineToSubscribers()
+                    self.delay_idle()
+                elif self.terminal_stop_count > 0:
+                    # Playback has ended: re-announce the stopped state for a few
+                    # cycles so a single dropped/reordered packet doesn't leave
+                    # the Plex server session wedged (playhead ticking past EOF).
                     self.SendTimelineToSubscribers()
-                self.delay_idle()
+                    self.terminal_stop_count -= 1
+                if self.idleTimer.elapsed() > settings.idle_cmd_delay and not self.is_idle:
+                    if settings.idle_when_paused and settings.stop_idle and playerManager._media_item:
+                        playerManager.stop()
+                    if settings.idle_cmd:
+                        os.system(settings.idle_cmd)
+                    self.is_idle = True
+            except Exception:
+                # Never let a transient error (e.g. the mpv core being torn
+                # down) permanently kill this thread, or all timeline updates
+                # (including the final "stopped") would stop forever.
+                log.warning("TimelineManager::run error while updating timeline", exc_info=True)
             force_next = False
-            if self.idleTimer.elapsed() > settings.idle_cmd_delay and not self.is_idle:
-                if settings.idle_when_paused and settings.stop_idle and playerManager._media_item:
-                    playerManager.stop()
-                if settings.idle_cmd:
-                    os.system(settings.idle_cmd)
-                self.is_idle = True
             if self.trigger.wait(1):
                 force_next = True
                 self.trigger.clear()
@@ -66,6 +87,17 @@ class TimelineManager(threading.Thread):
     def delay_idle(self):
         self.idleTimer.restart()
         self.is_idle = False
+
+    def notify_stopped(self, media_item, position_ms):
+        """
+        Record the final position of a finished item and schedule several
+        authoritative state=stopped timelines to the Plex server. Called
+        from PlayerManager.stop() *before* the media item is cleared.
+        """
+        self.terminal_stop_item  = media_item
+        self.terminal_stop_time  = position_ms
+        self.terminal_stop_count = 5
+        self.trigger.set()
 
     def SendTimelineToSubscribers(self):
         timeline = self.GetCurrentTimeline()
@@ -81,10 +113,15 @@ class TimelineManager(threading.Thread):
         # Do not send the timeline if the last one if still sending.
         # (Plex servers can get overloaded... We don't want the UI to freeze.)
         # Note that we send anyway if the state is stopped. We don't want that to get lost.
-        if self.sending_to_ps.acquire(False) or timeline["state"] == "stopped":
-            self.sender_pool.apply_async(self.SendTimelineToPlexServer, (timeline,))
+        # We pass whether we actually acquired the lock so the worker only
+        # releases what it owns -- otherwise a "stopped" timeline dispatched
+        # while a "playing" send is still in flight causes a double-release
+        # (RuntimeError) and corrupts the mutual exclusion.
+        acquired = self.sending_to_ps.acquire(False)
+        if acquired or timeline["state"] == "stopped":
+            self.sender_pool.apply_async(self.SendTimelineToPlexServer, (timeline, acquired))
 
-    def SendTimelineToPlexServer(self, timeline):
+    def SendTimelineToPlexServer(self, timeline, acquired=True):
         try:
             media_item  = playerManager._media_item
             server_url = None
@@ -96,7 +133,8 @@ class TimelineManager(threading.Thread):
             if server_url:
                 safe_urlopen("%s/:/timeline" % server_url, timeline, quiet=True)
         finally:
-            self.sending_to_ps.release()
+            if acquired:
+                self.sending_to_ps.release()
 
     def SendTimelineToSubscriber(self, subscriber, timeline=None):
         subscriber.set_poll_evt()
@@ -159,7 +197,7 @@ class TimelineManager(threading.Thread):
         # Note: location is set to "" to avoid pop-up of navigation menu. This may be abuse of the API.
         options = {
             "location": "",
-            "state":    playerManager.get_state(),
+            "state":    "stopped",
             "type":     "video"
         }
         controllable = []
@@ -167,23 +205,52 @@ class TimelineManager(threading.Thread):
         media_item  = playerManager._media_item
         player = playerManager._player
 
+        # Only touch the mpv core while a media item is active. Reading core
+        # properties when nothing is playing -- or after the user closed the
+        # window and the core was torn down -- can raise (ShutdownError on the
+        # internal backend, an IPC error on the external one). Equally
+        # important: a *transient* read error during active playback must not
+        # be mistaken for a stop, or we would spuriously report "stopped" and
+        # drop the session. So we read the core only here, and the idle/stopped
+        # branch below never touches it.
+        playback_time = None
+        is_playing = False
+        if media_item:
+            playback_time = player.playback_time
+            is_playing = (not player.playback_abort) and bool(playback_time)
+
         # The playback_time value can take on the value of none, probably
         # when playback is complete. This avoids the thread crashing.
-        if media_item and not player.playback_abort and player.playback_time:
+        if is_playing:
+            options["state"]     = playerManager.get_state()
             self.last_media_item = media_item
+            # Real playback is active again; drop any pending terminal stop.
+            self.terminal_stop_item = None
+            self.terminal_stop_count = 0
             media = media_item.parent
 
             if media_item.media_type == MediaType.VIDEO:
                 options["type"]          = "video"
-                options["location"]      = "fullScreenVideo"
             elif media_item.media_type == MediaType.MUSIC:
                 options["type"]          = "video"
-                options["location"]      = "fullScreenMusic"
 
-            options["time"]              = int(player.playback_time * 1e3)
-            options["autoPlay"]          = '1' if settings.auto_play else '0'
+            # Real Plex players report the container location as "navigation"
+            # while casting (not "fullScreenVideo"); the web player's overlay
+            # only tracks the timeline when it sees this value.
+            options["location"]          = "navigation"
+
+            options["time"]              = int(playback_time * 1e3)
+            # Reported by real players; included so the web player treats this
+            # as a normal library playback session.
+            options["providerIdentifier"] = "com.plexapp.plugins.library"
+            options["repeat"]            = "0"
+            options["shuffle"]           = "0"
             
             aid, sid = playerManager.get_track_ids()
+
+            vid = media_item.get_video_stream_id()
+            if vid:
+                options["videoStreamID"] = vid
 
             if aid:
                 options["audioStreamID"] = aid
@@ -207,7 +274,6 @@ class TimelineManager(threading.Thread):
             options["protocol"]          = media.path.scheme
             options["port"]              = media.path.port
             options["machineIdentifier"] = media.get_machine_identifier()
-            options["seekRange"]         = "0-%s" % options["duration"]
 
             if media.play_queue:
                 options.update(media.get_queue_info())
@@ -218,10 +284,13 @@ class TimelineManager(threading.Thread):
             controllable.append("stepForward")
             controllable.append("seekTo")
             controllable.append("skipTo")
-            controllable.append("autoPlay")
 
             controllable.append("subtitleStream")
             controllable.append("audioStream")
+            # Advertised by real players.
+            controllable.append("videoStream")
+            controllable.append("shuffle")
+            controllable.append("repeat")
 
             if media_item.parent.has_next:
                 controllable.append("skipNext")
@@ -232,7 +301,6 @@ class TimelineManager(threading.Thread):
             # If the duration is unknown, disable seeking
             if options["duration"] == "0":
                 options.pop("duration")
-                options.pop("seekRange")
                 controllable.remove("seekTo")
 
             controllable.append("volume")
@@ -240,17 +308,28 @@ class TimelineManager(threading.Thread):
 
             options["controllable"] = ",".join(controllable)
         else:
-            if self.last_media_item:
-                media_item = self.last_media_item
+            media_item = self.terminal_stop_item or self.last_media_item
+            if media_item:
                 options["ratingKey"]         = media_item.get_attr("ratingKey")
                 options["key"]               = media_item.get_attr("key")
                 options["containerKey"]      = media_item.get_attr("key")
+                duration = media_item.get_attr("duration")
+                if duration:
+                    options["duration"]      = duration
                 if media_item.parent.play_queue:
                     options.update(media_item.parent.get_queue_info())
-            if player.playback_abort:
+            if self.terminal_stop_item is not None:
+                # Authoritative end-of-playback stop: include the final
+                # position so the server terminates the session instead of
+                # extrapolating the playhead from wall-clock time.
                 options["state"] = "stopped"
-            else:
+                options["time"]  = int(self.terminal_stop_time)
+            elif playerManager._media_item is not None:
+                # A media item is loaded but not yet producing a playback
+                # position -- still buffering. Don't touch the core to decide.
                 options["state"] = "buffering"
+            else:
+                options["state"] = "stopped"
 
         return options
 
