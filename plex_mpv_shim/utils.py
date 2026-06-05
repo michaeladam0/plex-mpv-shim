@@ -75,6 +75,11 @@ def get_session(domain):
 def get_plex_url(url, data=None, quiet=False):
     if not data:
         data = {}
+    else:
+        # Copy so we don't mutate the caller's dict: the timeline dict is shared
+        # across the sender pool, and adding X-Plex-* here would leak into the
+        # XML other senders build from the same object.
+        data = dict(data)
 
     parsed_url = urllib.parse.urlsplit(url)
     domain = parsed_url.hostname
@@ -101,6 +106,9 @@ def get_plex_url(url, data=None, quiet=False):
         # Lies
         "X-Plex-Product":             "Plex MPV Shim",
         "X-Plex-Platform":            "Plex Home Theater",
+        # The provider-playback endpoints (/player/proxy/*) require this; without
+        # it they reject the request with a generic HTTP 400.
+        "X-Plex-Platform-Version":    "1.0",
         "X-Plex-Client-Profile-Name": settings.client_profile,
     })
 

@@ -280,11 +280,15 @@ class HttpHandler(SimpleHTTPRequestHandler):
         if settings.enable_play_queue:
             capabilities = "timeline,playback,navigation,playqueues"
 
+        # Advertise provider-playback so Plex Web's in-page player drives us via
+        # the proxy poll/timeline channels (see proxy.py).
+        capabilities += ",provider-playback"
+
         info = (("deviceClass",               "pc"),
                 ("machineIdentifier",         settings.client_uuid),
                 ("product",                   "Plex MPV Shim"),
                 ("protocolCapabilities",      capabilities),
-                ("protocolVersion",           "1"),
+                ("protocolVersion",           "2"),
                 ("title",                     settings.player_name),
                 ("version",                   "1.0"))
 

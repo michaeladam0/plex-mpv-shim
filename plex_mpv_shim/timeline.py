@@ -17,7 +17,9 @@ from .conf import settings
 from .media import MediaType
 from .player import playerManager
 from .subscribers import remoteSubscriberManager
-from .utils import Timer, safe_urlopen, mpv_color_to_plex
+import urllib.parse
+
+from .utils import Timer, safe_urlopen, mpv_color_to_plex, get_plex_url, get_session
 
 log = logging.getLogger("timeline")
 
@@ -36,12 +38,15 @@ class TimelineManager(threading.Thread):
         self.sender_pool     = Pool(5)
         self.sending_to_ps   = Lock()
         self.last_server_url = None
+        # True once a "stopped" frame has gone to the proxy channel for the
+        # current stop; suppresses the repeats (matches the HTPC, which sends
+        # one then goes quiet). Reset when playback resumes.
+        self._proxy_stopped_sent = False
 
-        # End-of-playback terminal stop tracking. When playback ends the
-        # active media item is cleared, so we stash the final item/position
-        # here and keep re-announcing a state=stopped timeline for a few
-        # cycles. Without this the Plex server keeps extrapolating the
-        # playhead and the session never terminates.
+        # Terminal-stop tracking. Playback ending clears the active media item,
+        # so stash the final item/position and re-announce state=stopped for a
+        # few cycles -- otherwise the server extrapolates the playhead and the
+        # session never terminates.
         self.terminal_stop_item  = None
         self.terminal_stop_time  = 0
         self.terminal_stop_count = 0
@@ -63,9 +68,8 @@ class TimelineManager(threading.Thread):
                         self.SendTimelineToSubscribers()
                     self.delay_idle()
                 elif self.terminal_stop_count > 0:
-                    # Playback has ended: re-announce the stopped state for a few
-                    # cycles so a single dropped/reordered packet doesn't leave
-                    # the Plex server session wedged (playhead ticking past EOF).
+                    # Re-announce the stopped state so a dropped packet can't
+                    # leave the server session wedged (playhead ticking past EOF).
                     self.SendTimelineToSubscribers()
                     self.terminal_stop_count -= 1
                 if self.idleTimer.elapsed() > settings.idle_cmd_delay and not self.is_idle:
@@ -75,9 +79,9 @@ class TimelineManager(threading.Thread):
                         os.system(settings.idle_cmd)
                     self.is_idle = True
             except Exception:
-                # Never let a transient error (e.g. the mpv core being torn
-                # down) permanently kill this thread, or all timeline updates
-                # (including the final "stopped") would stop forever.
+                # Keep the thread alive through transient errors (e.g. the mpv
+                # core being torn down), or timeline updates -- including the
+                # final "stopped" -- would stop forever.
                 log.warning("TimelineManager::run error while updating timeline", exc_info=True)
             force_next = False
             if self.trigger.wait(1):
@@ -113,13 +117,16 @@ class TimelineManager(threading.Thread):
         # Do not send the timeline if the last one if still sending.
         # (Plex servers can get overloaded... We don't want the UI to freeze.)
         # Note that we send anyway if the state is stopped. We don't want that to get lost.
-        # We pass whether we actually acquired the lock so the worker only
-        # releases what it owns -- otherwise a "stopped" timeline dispatched
-        # while a "playing" send is still in flight causes a double-release
-        # (RuntimeError) and corrupts the mutual exclusion.
+        # Pass whether we acquired the lock so the worker only releases what it
+        # owns -- a "stopped" timeline sent while a "playing" send is in flight
+        # would otherwise double-release (RuntimeError).
         acquired = self.sending_to_ps.acquire(False)
         if acquired or timeline["state"] == "stopped":
             self.sender_pool.apply_async(self.SendTimelineToPlexServer, (timeline, acquired))
+
+        # Provider-playback: push the timeline to the server so the Plex Web
+        # in-page player (which doesn't use the legacy poll reply) updates.
+        self.sender_pool.apply_async(self.SendTimelineToProxy, (timeline,))
 
     def SendTimelineToPlexServer(self, timeline, acquired=True):
         try:
@@ -173,24 +180,123 @@ class TimelineManager(threading.Thread):
         subscriber.get_poll_evt().wait(30)
         return self.GetCurrentTimeLinesXML(subscriber)
 
+    def _appendTimelines(self, mediaContainer, tlines):
+        # Companion controllers expect a Timeline for *each* media type (video,
+        # music, photo) in every payload, not just the active one. We only drive
+        # "video"; the rest are reported stopped. location lives on the
+        # MediaContainer, so don't repeat it onto the active Timeline.
+        #
+        # When stopped, the frame must be EMPTY -- a bare <Timeline type=...
+        # state='stopped' controllable=''/> for every type, as the HTPC sends
+        # when idle. Carrying the last item's details makes Plex Web think the
+        # player still has it loaded: it snaps the resume dialog to 0 and forces
+        # an extra stop before a new play starts. The legacy /:/timeline POST
+        # (SendTimelineToPlexServer) is separate and still carries the position.
+        active_type = tlines.get("type", "video")
+        active_stopped = tlines.get("state") == "stopped"
+        for media_type in ("video", "music", "photo"):
+            lineEl = et.Element("Timeline")
+            if media_type == active_type and not active_stopped:
+                for key, value in list(tlines.items()):
+                    if key == "location":
+                        continue
+                    lineEl.set(key, str(value))
+            else:
+                lineEl.set("type", media_type)
+                lineEl.set("state", "stopped")
+                lineEl.set("controllable", "")
+            mediaContainer.append(lineEl)
+
     def GetCurrentTimeLinesXML(self, subscriber, tlines=None):
         if tlines is None:
             tlines = self.GetCurrentTimeline()
 
-        #
-        # Only "video" is supported right now
-        #
         mediaContainer = et.Element("MediaContainer")
         if subscriber.commandID is not None:
             mediaContainer.set("commandID", str(subscriber.commandID))
         mediaContainer.set("location", tlines["location"])
 
-        lineEl = et.Element("Timeline")
-        for key, value in list(tlines.items()):
-            lineEl.set(key, str(value))
-        mediaContainer.append(lineEl)
+        self._appendTimelines(mediaContainer, tlines)
 
         return mediaContainer
+
+    def SendTimelineToProxy(self, timeline):
+        """
+        Push the timeline to /player/proxy/timeline (provider-playback). This
+        is the feed the Plex Web in-page player's scrubber uses; the legacy poll
+        reply isn't enough for it.
+        """
+        # The server rejects this push (HTTP 400) without an open notifications
+        # WebSocket; skip until it's up rather than firing doomed requests.
+        from .proxy import notificationListener, proxyClient
+        if not notificationListener.connected:
+            return
+
+        media_item = playerManager._media_item
+        server_url = None
+        if media_item:
+            server_url = media_item.parent.server_url
+        elif self.last_server_url:
+            server_url = self.last_server_url
+        if not server_url:
+            return
+
+        # After a stop, push one "stopped" frame then stay quiet (matches the
+        # HTPC). The terminal-stop defense re-announces "stopped" several times;
+        # repeating it on the proxy channel floods the controller during the
+        # stop->play transition, dismissing the resume dialog and cutting a
+        # freshly started stream. Only the proxy push is gated; legacy is not.
+        if timeline.get("state", "stopped") == "stopped":
+            if self._proxy_stopped_sent:
+                return
+            self._proxy_stopped_sent = True
+        else:
+            self._proxy_stopped_sent = False
+
+        mediaContainer = et.Element("MediaContainer")
+        # The HTPC reports location 'navigation' on every provider-playback
+        # frame. (The legacy paths keep their own handling, where an empty value
+        # guards against a nav-menu popup on legacy controllers.)
+        mediaContainer.set("location", "navigation")
+        self._appendTimelines(mediaContainer, timeline)
+
+        tree = et.ElementTree(mediaContainer)
+        tmp  = BytesIO()
+        tree.write(tmp, encoding="utf-8", xml_declaration=True)
+        tmp.seek(0)
+        body = tmp.read()
+
+        # Echo the proxy channel's latest commandID so the overlay knows the
+        # player applied its command (e.g. a seek); if it lags, the scrubber
+        # freezes. This is the proxy poll's counter, not the legacy subscriber's.
+        command_id = proxyClient.last_command_id
+
+        data = {
+            "commandID": str(command_id),
+            "deviceClass": "pc",
+            "protocolCapabilities": "timeline,playback,navigation,playqueues,provider-playback",
+            "protocolVersion": "2",
+            "X-Plex-Session-Id": get_session(urllib.parse.urlsplit(server_url).hostname),
+        }
+        if playerManager.playback_session_id:
+            data["X-Plex-Playback-Session-Id"] = playerManager.playback_session_id
+        if playerManager.playback_id:
+            data["X-Plex-Playback-Id"] = playerManager.playback_id
+
+        url = get_plex_url("%s/player/proxy/timeline" % server_url, data, quiet=True)
+        try:
+            resp = requests.post(url, data=body, headers={
+                "Content-Type":             "application/xml",
+                "X-Plex-Client-Identifier": settings.client_uuid,
+            }, timeout=5)
+            if resp.status_code == 200:
+                log.debug("TimelineManager::SendTimelineToProxy %s/player/proxy/timeline -> HTTP 200",
+                          server_url)
+            else:
+                log.warning("TimelineManager::SendTimelineToProxy rejected (HTTP %s): %s",
+                            resp.status_code, resp.text[:200])
+        except Exception:
+            log.warning("TimelineManager::SendTimelineToProxy error pushing proxy timeline", exc_info=True)
 
     def GetCurrentTimeline(self):
         # https://github.com/plexinc/plex-home-theater-public/blob/pht-frodo/plex/Client/PlexTimelineManager.cpp#L142
@@ -205,14 +311,10 @@ class TimelineManager(threading.Thread):
         media_item  = playerManager._media_item
         player = playerManager._player
 
-        # Only touch the mpv core while a media item is active. Reading core
-        # properties when nothing is playing -- or after the user closed the
-        # window and the core was torn down -- can raise (ShutdownError on the
-        # internal backend, an IPC error on the external one). Equally
-        # important: a *transient* read error during active playback must not
-        # be mistaken for a stop, or we would spuriously report "stopped" and
-        # drop the session. So we read the core only here, and the idle/stopped
-        # branch below never touches it.
+        # Only read the mpv core while a media item is active: reading it when
+        # idle or after the window was closed can raise (ShutdownError / IPC
+        # error). Reading only here also keeps a transient read error during
+        # playback from being mistaken for a stop and dropping the session.
         playback_time = None
         is_playing = False
         if media_item:
@@ -234,14 +336,12 @@ class TimelineManager(threading.Thread):
             elif media_item.media_type == MediaType.MUSIC:
                 options["type"]          = "video"
 
-            # Real Plex players report the container location as "navigation"
-            # while casting (not "fullScreenVideo"); the web player's overlay
-            # only tracks the timeline when it sees this value.
+            # "navigation" (not "fullScreenVideo") while casting; the web
+            # player's overlay only tracks the timeline when it sees this.
             options["location"]          = "navigation"
 
             options["time"]              = int(playback_time * 1e3)
-            # Reported by real players; included so the web player treats this
-            # as a normal library playback session.
+            # Marks this as a normal library playback session for the web player.
             options["providerIdentifier"] = "com.plexapp.plugins.library"
             options["repeat"]            = "0"
             options["shuffle"]           = "0"
@@ -319,14 +419,12 @@ class TimelineManager(threading.Thread):
                 if media_item.parent.play_queue:
                     options.update(media_item.parent.get_queue_info())
             if self.terminal_stop_item is not None:
-                # Authoritative end-of-playback stop: include the final
-                # position so the server terminates the session instead of
-                # extrapolating the playhead from wall-clock time.
+                # Terminal stop: send the final position so the server
+                # terminates the session instead of extrapolating the playhead.
                 options["state"] = "stopped"
                 options["time"]  = int(self.terminal_stop_time)
             elif playerManager._media_item is not None:
-                # A media item is loaded but not yet producing a playback
-                # position -- still buffering. Don't touch the core to decide.
+                # Loaded but no playback position yet -- still buffering.
                 options["state"] = "buffering"
             else:
                 options["state"] = "stopped"

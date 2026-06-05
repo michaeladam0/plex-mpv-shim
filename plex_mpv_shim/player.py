@@ -86,8 +86,8 @@ class PlayerManager(object):
         self.external_subtitles = {}
         self.external_subtitles_rev = {}
         self.url = None
-        # Plex Companion (provider-playback) per-playback session identifiers,
-        # reported on the /player/proxy/timeline push.
+        # Per-playback session identifiers (X-Plex-Playback-*), surfaced on the
+        # proxy timeline push.
         self.playback_session_id = None
         self.playback_id = None
         self.evt_queue = Queue()
@@ -95,10 +95,13 @@ class PlayerManager(object):
         self.is_in_credits = False
         self.intro_has_triggered = False
         self.credits_has_triggered = False
-        # Set when the underlying mpv core is gone -- e.g. the user closed the
-        # external mpv window, which terminates the mpv process. We recreate it
-        # lazily on the next playback request.
+        # Set when the mpv core is gone (e.g. the external window was closed,
+        # which kills the process). Recreated lazily on the next playback.
         self._player_shutdown = False
+        # Identifies the current mpv core. Bumped on every (re)create so a quit
+        # from a core we've already replaced or torn down is ignored as stale --
+        # we only act on the death of the process we currently own.
+        self._mpv_generation = 0
 
         self._init_mpv()
 
@@ -110,6 +113,24 @@ class PlayerManager(object):
         closing the external mpv window terminates the mpv process, so the next
         playback has to spin up a fresh one.
         """
+        # Bump the generation first so a quit from the core we're discarding --
+        # including the terminate() below -- is treated as stale (see
+        # _on_mpv_quit), not as the user closing the window.
+        self._mpv_generation += 1
+        generation = self._mpv_generation
+
+        # Tear down the previous core first. With the external backend start_mpv
+        # launches a fresh mpv.exe; without this the old (pipe-broken) one
+        # lingers and they accumulate. Best-effort -- the pipe may already be dead.
+        old_player = getattr(self, "_player", None)
+        if old_player is not None:
+            try:
+                old_player.terminate()
+            except Exception:
+                log.debug("PlayerManager::_init_mpv could not terminate previous mpv core",
+                          exc_info=True)
+            self._player = None
+
         mpv_options = OrderedDict()
 
         if is_using_ext_mpv:
@@ -132,9 +153,16 @@ class PlayerManager(object):
             mpv_options["include"] = conffile.get(APP_NAME, "mpv.conf", True)
             mpv_options["input_conf"] = conffile.get(APP_NAME, "input.conf", True)
 
+        # quit_callback fires the moment mpv's IPC connection dies (window
+        # closed, process exited/killed). Without it the shim only notices by
+        # failing an operation later -- which is what wedged it into needing a
+        # second play. Bind the generation so a late callback from a superseded
+        # core is ignored.
         self._player = mpv.MPV(input_default_bindings=True, input_vo_keyboard=True,
                                input_media_keys=True, log_handler=mpv_log_handler,
-                               loglevel=settings.mpv_log_level, **mpv_options)
+                               loglevel=settings.mpv_log_level,
+                               quit_callback=lambda: self._on_mpv_quit(generation),
+                               **mpv_options)
         self.menu = OSDMenu(self)
         if hasattr(self._player, 'osc'):
             self._player.osc = settings.enable_osc
@@ -311,6 +339,34 @@ class PlayerManager(object):
         if self.action_trigger:
             self.action_trigger.set()
 
+    def _on_mpv_quit(self, generation):
+        """
+        Called from mpv's socket thread when a core's IPC connection dies. Only
+        react if it's the core we currently own (a superseded generation is a
+        core we already replaced/tore down).
+
+        Runs on a foreign thread, so it stays cheap and must not take ``_lock``;
+        the teardown is handed to the action thread.
+        """
+        if generation != self._mpv_generation:
+            return
+        log.info("PlayerManager: owned mpv core exited; flagging for recreation.")
+        self._player_shutdown = True
+        self.put_task(self._handle_mpv_gone)
+
+    def _handle_mpv_gone(self):
+        """
+        Action-thread continuation of _on_mpv_quit: stop and clear the media
+        item so the session doesn't wedge. The next play recreates the core (via
+        _play_media's _player_shutdown check); we don't respawn it here.
+        """
+        if self._media_item is not None:
+            try:
+                self.stop()
+            except Exception:
+                log.debug("PlayerManager::_handle_mpv_gone stop failed", exc_info=True)
+        self.timeline_handle()
+
     # Trigger the timeline to update all
     # clients immediately.
     def timeline_handle(self):
@@ -391,8 +447,7 @@ class PlayerManager(object):
 
     @synchronous('_lock')
     def _play_media(self, media_item, url, offset=0):
-        # If the mpv core went away (external window closed), bring it back
-        # before doing anything that touches it.
+        # Recreate the core if it went away (external window closed).
         if self._player_shutdown:
             log.info("PlayerManager::_play_media mpv core was shut down; reinitializing.")
             self._init_mpv()
@@ -408,8 +463,7 @@ class PlayerManager(object):
             self._player.play(self.url)
             self._player.wait_for_property("duration")
         except Exception:
-            # Fallback: the core was dead but we hadn't flagged it. Recreate
-            # it and try once more before giving up.
+            # Core was dead but unflagged: recreate and retry once.
             log.warning("PlayerManager::_play_media playback failed; reinitializing mpv and retrying.", exc_info=True)
             self._init_mpv()
             self._player_shutdown = False
@@ -419,7 +473,7 @@ class PlayerManager(object):
             self._player.fs = True
         self._player.force_media_title = media_item.get_proper_title()
         self._media_item  = media_item
-        # Fresh Companion playback session for this item.
+        # Fresh playback session for this item.
         self.playback_session_id = str(uuid.uuid4())
         self.playback_id = str(uuid.uuid4())
         self.is_in_intro = False
@@ -465,12 +519,10 @@ class PlayerManager(object):
 
     @synchronous('_lock')
     def stop(self, playend=False):
-        # Note: we must NOT early-return just because playback_abort is set.
-        # Closing the mpv window (CLOSE_WIN) aborts playback *before*
-        # handle_stop() runs, so playback_abort is already True here. The old
-        # guard returned early in that case and Plex never received the stop,
-        # leaving the session running past EOF. As long as a media item is
-        # active we proceed through the same teardown the EOF path uses.
+        # Do NOT early-return on playback_abort: closing the window (CLOSE_WIN)
+        # sets it before handle_stop() runs, and the old guard then skipped the
+        # stop, leaving the session running past EOF. While a media item is
+        # active we run the same teardown as the EOF path.
         if not self._media_item:
             self.exec_stop_cmd()
             return
@@ -478,23 +530,19 @@ class PlayerManager(object):
         if not playend:
             log.debug("PlayerManager::stop stopping playback of %s" % self._media_item)
 
-        # Capture the final position and hand it to the timeline manager so it
-        # can send an authoritative state=stopped to the Plex server. This must
-        # happen before _media_item is cleared below.
+        # Must run before _media_item is cleared below.
         self._send_terminal_stop()
 
         if self._media_item.media_type == MediaType.VIDEO:
             self._media_item.terminate_transcode()
 
         self._media_item  = None
-        # The core may already be torn down (window closed); don't let that
-        # stop us from having notified Plex above.
+        # The core may already be gone (window closed); we've notified Plex above.
         try:
             self._player.command("stop")
             self._player.pause = False
         except Exception:
-            # The core failing here means it is gone (e.g. the external mpv
-            # window was closed). Flag it so the next playback recreates it.
+            # Core is gone (e.g. external window closed); recreate on next play.
             log.debug("PlayerManager::stop player appears to be shut down", exc_info=True)
             self._player_shutdown = True
         self.timeline_handle()
@@ -504,19 +552,16 @@ class PlayerManager(object):
 
     def _send_terminal_stop(self):
         """
-        Hand the final playback position to the timeline manager so it can send
-        an authoritative state=stopped to the Plex server. Without this the
-        server keeps extrapolating the playhead from wall-clock time and the
-        session never clears (the playhead ticks past the end of the file and
-        the shim appears wedged until it is restarted).
+        Hand the final playback position to the timeline manager for an
+        authoritative state=stopped. Without it the server extrapolates the
+        playhead and the session never clears (the shim appears wedged).
         """
         media_item = self._media_item
         if not media_item:
             return
 
-        # The core may already be torn down (window closed -> quit), in which
-        # case reading playback_time raises ShutdownError. Fall back to the
-        # known duration so we still report a sane final position.
+        # The core may be gone (window closed), so reading playback_time can
+        # raise ShutdownError. Fall back to the known duration.
         position_ms = None
         try:
             position = self._player.playback_time
@@ -732,6 +777,10 @@ class PlayerManager(object):
     
     def terminate(self):
         self.stop()
+        # Invalidate the generation so the quit our terminate() triggers is
+        # treated as stale, not as the user closing the window (which would
+        # queue a needless restart during shutdown).
+        self._mpv_generation += 1
         if is_using_ext_mpv and not self._player_shutdown:
             try:
                 self._player.terminate()
