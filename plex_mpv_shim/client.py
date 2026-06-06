@@ -365,6 +365,8 @@ class HttpHandler(SimpleHTTPRequestHandler):
         if "autoPlay" in arguments:
             settings.auto_play = arguments["autoPlay"] == "1"
             settings.save()
+        if "repeat" in arguments:
+            playerManager.set_repeat(arguments["repeat"])
         subtitle_settings_upd = False
         if "subtitleSize" in arguments:
             subtitle_settings_upd = True

@@ -35,6 +35,9 @@ if settings.mpv_ext or not python_mpv_available:
 
 APP_NAME = 'plex-mpv-shim'
 
+# Plex setParameters repeat values.
+REPEAT_OFF, REPEAT_ONE, REPEAT_ALL = 0, 1, 2
+
 SUBTITLE_POS = {
     "top": 0,
     "bottom": 100,
@@ -86,6 +89,9 @@ class PlayerManager(object):
         self.external_subtitles = {}
         self.external_subtitles_rev = {}
         self.url = None
+        # Repeat mode set by the controller (REPEAT_*). Shuffle is server-side
+        # on the play queue, so it isn't tracked here.
+        self.repeat = REPEAT_OFF
         # Per-playback session identifiers (X-Plex-Playback-*), surfaced on the
         # proxy timeline push.
         self.playback_session_id = None
@@ -645,10 +651,24 @@ class PlayerManager(object):
             else:
                 log.debug("PlayerManager::finished_callback No lock, skipping...")
         
-        elif self._media_item.parent.has_next and settings.auto_play:
+        elif self.repeat == REPEAT_ONE:
+            if has_lock:
+                log.debug("PlayerManager::finished_callback repeat-one, replaying")
+                self.play(self._media_item, 0)
+            else:
+                log.debug("PlayerManager::finished_callback No lock, skipping...")
+
+        elif self._media_item.parent.has_next and (settings.auto_play or self.repeat == REPEAT_ALL):
             if has_lock:
                 log.debug("PlayerManager::finished_callback starting next episode")
                 self.play(self._media_item.parent.get_next().get_media_item(0))
+            else:
+                log.debug("PlayerManager::finished_callback No lock, skipping...")
+
+        elif self.repeat == REPEAT_ALL and self._media_item.parent.play_queue:
+            if has_lock:
+                log.debug("PlayerManager::finished_callback repeat-all, looping to start")
+                self.play(self._media_item.parent.get_first().get_media_item(0))
             else:
                 log.debug("PlayerManager::finished_callback No lock, skipping...")
 
@@ -695,6 +715,10 @@ class PlayerManager(object):
             self.play(self._media_item.parent.get_prev().get_media_item(0))
             return True
         return False
+
+    def set_repeat(self, repeat):
+        self.repeat = int(repeat)
+        self.timeline_handle()
 
     @synchronous('_lock')
     def restart_playback(self):

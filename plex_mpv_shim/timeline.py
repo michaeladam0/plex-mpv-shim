@@ -343,7 +343,8 @@ class TimelineManager(threading.Thread):
             options["time"]              = int(playback_time * 1e3)
             # Marks this as a normal library playback session for the web player.
             options["providerIdentifier"] = "com.plexapp.plugins.library"
-            options["repeat"]            = "0"
+            # repeat is player-side; shuffle is overridden by get_queue_info below.
+            options["repeat"]            = str(playerManager.repeat)
             options["shuffle"]           = "0"
             
             aid, sid = playerManager.get_track_ids()

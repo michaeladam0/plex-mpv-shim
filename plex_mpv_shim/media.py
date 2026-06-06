@@ -670,12 +670,19 @@ class Media(XMLCollection):
         container_key = self.play_queue
         if container_key:
             container_key = container_key.split("?", 1)[0]
+        root = self.play_queue_xml.tree.find(".")
         return {
             "containerKey": container_key,
-            "playQueueID": self.play_queue_xml.tree.find(".").get("playQueueID"),
-            "playQueueVersion": self.play_queue_xml.tree.find(".").get("playQueueVersion"),
-            "playQueueItemID": self.series[self.seq].get("playQueueItemID")
+            "playQueueID": root.get("playQueueID"),
+            "playQueueVersion": root.get("playQueueVersion"),
+            "playQueueItemID": self.series[self.seq].get("playQueueItemID"),
+            # Shuffle is server-side; the controller toggles it and we re-fetch.
+            "shuffle": "1" if root.get("playQueueShuffled") in ("1", "true") else "0",
         }
+
+    def get_first(self):
+        first = self.series[0]
+        return Media(self.get_path(first.get('key')), self.series, 0, self.play_queue, self.play_queue_xml, self.media_type)
 
     def get_next(self):
         if self.has_next:
