@@ -23,6 +23,13 @@ from .utils import Timer, safe_urlopen, mpv_color_to_plex, get_plex_url, get_ses
 
 log = logging.getLogger("timeline")
 
+# While idle we push a bare navigation/stopped frame to the proxy channel this
+# often. Without it the server ages out our player selection and the next
+# playMedia stalls until the controller re-casts. Comfortably under the ~90s
+# subscriber TTL, and cheap enough to run indefinitely (matches the HTPC, which
+# keeps sending idle timelines).
+PROXY_IDLE_KEEPALIVE = 10
+
 class TimelineManager(threading.Thread):
     def __init__(self):
         self.currentItems    = {}
@@ -51,6 +58,9 @@ class TimelineManager(threading.Thread):
         self.terminal_stop_time  = 0
         self.terminal_stop_count = 0
 
+        # Paces the idle keepalive push to the proxy channel (see run()).
+        self.proxy_idle_timer    = Timer()
+
         threading.Thread.__init__(self)
 
     def stop(self):
@@ -67,11 +77,22 @@ class TimelineManager(threading.Thread):
                     if force_next or not playerManager.is_paused():
                         self.SendTimelineToSubscribers()
                     self.delay_idle()
+                    self.proxy_idle_timer.restart()
                 elif self.terminal_stop_count > 0:
                     # Re-announce the stopped state so a dropped packet can't
                     # leave the server session wedged (playhead ticking past EOF).
                     self.SendTimelineToSubscribers()
                     self.terminal_stop_count -= 1
+                    self.proxy_idle_timer.restart()
+                elif playerManager._media_item is None:
+                    # Fully idle between sessions: nudge the proxy channel with a
+                    # bare stopped frame so the server keeps our player selected.
+                    # Without this the run loop goes silent after the terminal
+                    # stop and the next playMedia stalls until the user re-casts.
+                    if self.proxy_idle_timer.elapsed() > PROXY_IDLE_KEEPALIVE:
+                        self.proxy_idle_timer.restart()
+                        self.sender_pool.apply_async(self.SendTimelineToProxy,
+                                                     (self.GetCurrentTimeline(), True))
                 if self.idleTimer.elapsed() > settings.idle_cmd_delay and not self.is_idle:
                     if settings.idle_when_paused and settings.stop_idle and playerManager._media_item:
                         playerManager.stop()
@@ -220,11 +241,15 @@ class TimelineManager(threading.Thread):
 
         return mediaContainer
 
-    def SendTimelineToProxy(self, timeline):
+    def SendTimelineToProxy(self, timeline, keepalive=False):
         """
         Push the timeline to /player/proxy/timeline (provider-playback). This
         is the feed the Plex Web in-page player's scrubber uses; the legacy poll
         reply isn't enough for it.
+
+        keepalive marks the slow idle push from run(): it must bypass the
+        stopped-frame suppression below (that's there to collapse the terminal
+        stop burst, not to silence the keepalive).
         """
         # The server rejects this push (HTTP 400) without an open notifications
         # WebSocket; skip until it's up rather than firing doomed requests.
@@ -246,12 +271,13 @@ class TimelineManager(threading.Thread):
         # repeating it on the proxy channel floods the controller during the
         # stop->play transition, dismissing the resume dialog and cutting a
         # freshly started stream. Only the proxy push is gated; legacy is not.
-        if timeline.get("state", "stopped") == "stopped":
-            if self._proxy_stopped_sent:
-                return
-            self._proxy_stopped_sent = True
-        else:
-            self._proxy_stopped_sent = False
+        if not keepalive:
+            if timeline.get("state", "stopped") == "stopped":
+                if self._proxy_stopped_sent:
+                    return
+                self._proxy_stopped_sent = True
+            else:
+                self._proxy_stopped_sent = False
 
         mediaContainer = et.Element("MediaContainer")
         # The HTPC reports location 'navigation' on every provider-playback
