@@ -119,11 +119,17 @@ class LoggerWindowProcess(Process):
             while True:
                 action, param = self.queue.get_nowait()
                 if action == "append":
+                    # Only follow the tail if the view is already at the bottom,
+                    # so a periodic append doesn't yank the user back down while
+                    # they're scrolled up reading earlier output. yview()[1] is
+                    # 1.0 when the last line is visible.
+                    at_bottom = self.text.yview()[1] >= 0.999
                     self.text.config(state=tk.NORMAL)
                     self.text.insert(tk.END, "\n")
                     self.text.insert(tk.END, param)
                     self.text.config(state=tk.DISABLED)
-                    self.text.see(tk.END)
+                    if at_bottom:
+                        self.text.see(tk.END)
                 elif action == "die":
                     self.root.destroy()
                     self.root.quit()
