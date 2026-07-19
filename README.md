@@ -448,7 +448,9 @@ and libmpv libraries are either 64 or 32 bit. (Don't mismatch them.)
 1. Install [Python3](https://www.python.org/downloads/) with PATH enabled. Install [7zip](https://ninite.com/7zip/).
 2. After installing python3, open `cmd` as admin and run `pip install --upgrade pyinstaller python-mpv requests pywin32 pystray python-mpv-jsonipc websocket-client`.
 3. Download [libmpv](https://sourceforge.net/projects/mpv-player-windows/files/libmpv/).
-4. Extract the `mpv-1.dll` from the file and move it to the `plex-mpv-shim` folder.
+4. Extract the `libmpv-2.dll` from the file and move it to the `plex-mpv-shim` folder. (Older libmpv builds named this `mpv-1.dll`; current builds ship `libmpv-2.dll`. `python-mpv` searches for `mpv-2.dll`, `libmpv-2.dll`, then `mpv-1.dll`, so any of those names works.)
 5. Open a regular `cmd` prompt. Navigate to the `plex-mpv-shim` folder.
 6. If you would like the shader pack included, [download it](https://github.com/iwalton3/default-shader-pack) and put the contents into `plex_mpv_shim\default_shader_pack`.
-7. Run `pyinstaller -wF --add-binary "mpv-1.dll;." --add-data "plex_mpv_shim\default_shader_pack;plex_mpv_shim\default_shader_pack" --add-binary "plex_mpv_shim\systray.png;." --icon media.ico run.py --hidden-import pystray._win32`.
+7. Run `pyinstaller -wF --add-binary "libmpv-2.dll;." --add-data "plex_mpv_shim\default_shader_pack;plex_mpv_shim\default_shader_pack" --add-binary "plex_mpv_shim\systray.png;." --icon media.ico run.py --hidden-import pystray._win32`.
+
+When running from source (rather than the built `.exe`), launch with `python run.py` so the bundled DLL is found. `run.py` prepends its own folder to `%PATH%`; the `plex-mpv-shim` console-script entry point does **not**, so if you launch that way you must place `libmpv-2.dll` somewhere already on `%PATH%` (e.g. next to `python.exe`).

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 
-# Newer revisions of python-mpv require mpv-1.dll in the PATH.
+# python-mpv loads libmpv from %PATH%. Current libmpv builds ship libmpv-2.dll
+# (older builds used mpv-1.dll); python-mpv searches for mpv-2.dll, libmpv-2.dll,
+# then mpv-1.dll. We prepend this script's folder so a DLL placed next to run.py
+# is found.
 import os
 import sys
 import multiprocessing

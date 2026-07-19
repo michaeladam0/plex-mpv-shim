@@ -3,3 +3,7 @@ dist
 build
 plex_mpv_shim.egg-info
 plex_mpv_shim/default_shader_pack/*
+*.dll
+run.spec
+PULL_REQUEST.md
+*.pcapng
