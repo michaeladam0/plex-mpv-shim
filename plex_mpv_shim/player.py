@@ -33,6 +33,48 @@ if settings.mpv_ext or not python_mpv_available:
     log.info("Using external mpv playback backend.")
     is_using_ext_mpv=True
 
+# python-mpv-jsonipc detects that a freshly launched mpv is ready by polling
+# os.path.exists() on its IPC named pipe. On Windows that call opens and closes
+# the pipe but frequently returns False even after mpv is listening, so the 10s
+# poll times out and mpv is killed and restarted -- adding ~10s per failed
+# attempt (typically two) to startup. Replace the check with a real pipe probe
+# (CreateFile OPEN_EXISTING, the same call the library's own socket uses to
+# connect a moment later) for the duration of MPVProcess's synchronous start.
+if is_using_ext_mpv and (sys.platform.startswith("win32") or sys.platform.startswith("cygwin")):
+    import _winapi
+
+    # ERROR_PIPE_BUSY: the pipe exists but every instance is momentarily in use.
+    # That still means mpv is up, so treat it as ready.
+    _ERROR_PIPE_BUSY = 231
+
+    def _pipe_ready(path):
+        try:
+            handle = _winapi.CreateFile(path, _winapi.GENERIC_READ, 0, _winapi.NULL,
+                                        _winapi.OPEN_EXISTING, 0, _winapi.NULL)
+        except OSError as ex:
+            return getattr(ex, "winerror", None) == _ERROR_PIPE_BUSY
+        _winapi.CloseHandle(handle)
+        return True
+
+    class _PatchedMPVProcess(mpv.MPVProcess):
+        def __init__(self, *args, **kwargs):
+            import os as _os
+            real_exists = _os.path.exists
+
+            def exists(path):
+                if isinstance(path, str) and path.startswith("\\\\.\\pipe\\"):
+                    return _pipe_ready(path)
+                return real_exists(path)
+
+            # Scoped to this synchronous constructor only, then restored.
+            _os.path.exists = exists
+            try:
+                super().__init__(*args, **kwargs)
+            finally:
+                _os.path.exists = real_exists
+
+    mpv.MPVProcess = _PatchedMPVProcess
+
 APP_NAME = 'plex-mpv-shim'
 
 # Plex setParameters repeat values.
