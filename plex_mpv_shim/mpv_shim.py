@@ -83,6 +83,9 @@ def main():
         log.info("Stopping services...")
     finally:
         playerManager.terminate()
+        # Tell the server we've stopped while the proxy/WebSocket are still up,
+        # so it tears the session down instead of leaving it hung.
+        timelineManager.send_final_stop()
         server.stop()
         timelineManager.stop()
         actionThread.stop()

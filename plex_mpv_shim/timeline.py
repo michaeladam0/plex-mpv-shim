@@ -124,6 +124,28 @@ class TimelineManager(threading.Thread):
         self.terminal_stop_count = 5
         self.trigger.set()
 
+    def send_final_stop(self):
+        """
+        Synchronously announce state=stopped to the server (proxy + legacy) and
+        every subscriber during shutdown, so the server tears the session down
+        instead of leaving it hung. Must run while the notifications WebSocket
+        is still up (SendTimelineToProxy needs it) and before the sender pool is
+        closed -- so it sends directly rather than via the pool.
+        """
+        try:
+            timeline = self.GetCurrentTimeline()
+            timeline["state"] = "stopped"
+            for sub in list(remoteSubscriberManager.subscribers.values()):
+                try:
+                    self.SendTimelineToSubscriber(sub, timeline)
+                except Exception:
+                    log.debug("TimelineManager::send_final_stop subscriber send failed",
+                              exc_info=True)
+            self.SendTimelineToPlexServer(timeline, False)
+            self.SendTimelineToProxy(timeline, keepalive=True)
+        except Exception:
+            log.warning("TimelineManager::send_final_stop failed", exc_info=True)
+
     def SendTimelineToSubscribers(self):
         timeline = self.GetCurrentTimeline()
 
