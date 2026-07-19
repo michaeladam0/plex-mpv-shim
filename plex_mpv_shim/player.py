@@ -636,41 +636,40 @@ class PlayerManager(object):
     def finished_callback(self, has_lock):
         if not self._media_item:
             return
-       
+
+        # Only the eof/abort event that won _finished_lock may advance. A second
+        # event from the same finish -- or one thrown off by the file-switch
+        # transition when we auto-play the next item -- arrives with
+        # has_lock=False. It must do nothing: otherwise it marks the freshly
+        # started next file played and (via the else branch) stops it less than
+        # a second in. The lock is released in _play_media once the next file is
+        # live, so a genuine finish of that file still wins the lock later.
+        if not has_lock:
+            log.debug("PlayerManager::finished_callback duplicate/stale finish, ignoring")
+            return
+
         self._media_item.set_played()
 
         if self._media_item.is_multipart():
-            if has_lock:
-                log.debug("PlayerManager::finished_callback media is multi-part, checking for next part")
-                # Try to select the next part
-                next_part = self.__part+1
-                if self._media_item.select_part(next_part):
-                    self.__part = next_part
-                    log.debug("PlayerManager::finished_callback starting next part")
-                    self.play(self._media_item)
-            else:
-                log.debug("PlayerManager::finished_callback No lock, skipping...")
-        
+            log.debug("PlayerManager::finished_callback media is multi-part, checking for next part")
+            # Try to select the next part
+            next_part = self.__part+1
+            if self._media_item.select_part(next_part):
+                self.__part = next_part
+                log.debug("PlayerManager::finished_callback starting next part")
+                self.play(self._media_item)
+
         elif self.repeat == REPEAT_ONE:
-            if has_lock:
-                log.debug("PlayerManager::finished_callback repeat-one, replaying")
-                self.play(self._media_item, 0)
-            else:
-                log.debug("PlayerManager::finished_callback No lock, skipping...")
+            log.debug("PlayerManager::finished_callback repeat-one, replaying")
+            self.play(self._media_item, 0)
 
         elif self._media_item.parent.has_next and (settings.auto_play or self.repeat == REPEAT_ALL):
-            if has_lock:
-                log.debug("PlayerManager::finished_callback starting next episode")
-                self.play(self._media_item.parent.get_next().get_media_item(0))
-            else:
-                log.debug("PlayerManager::finished_callback No lock, skipping...")
+            log.debug("PlayerManager::finished_callback starting next episode")
+            self.play(self._media_item.parent.get_next().get_media_item(0))
 
         elif self.repeat == REPEAT_ALL and self._media_item.parent.play_queue:
-            if has_lock:
-                log.debug("PlayerManager::finished_callback repeat-all, looping to start")
-                self.play(self._media_item.parent.get_first().get_media_item(0))
-            else:
-                log.debug("PlayerManager::finished_callback No lock, skipping...")
+            log.debug("PlayerManager::finished_callback repeat-all, looping to start")
+            self.play(self._media_item.parent.get_first().get_media_item(0))
 
         else:
             if settings.media_ended_cmd:
