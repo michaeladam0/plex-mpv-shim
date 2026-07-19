@@ -238,6 +238,9 @@ Currently on Windows the built-in MPV does not work with SVP. You must download 
  - `log_decisions` - Log the full playback URLs. Default: `false`
  - `mpv_log_level` - Log level to use for mpv. Default: `info`
     - Options: fatal, error, warn, info, v, debug, trace
+ - `mpv_log_file` - Write mpv's own log to `mpv.log` in the config directory. Default: `false`
+    - **For debugging only.** Unlike the in-app log, this captures mpv from process launch (before the shim attaches), which is useful for diagnosing a slow or failing mpv start.
+    - The file is truncated and rewritten on **every** mpv start, so it only ever holds the most recent start. Copy it elsewhere if you need to keep it. Leave this off for normal use.
  - `idle_when_paused` - Consider the player idle when paused. Default: `false`
  - `stop_idle` - Stop the player when idle. (Requires `idle_when_paused`.) Default: `false`
  - `skip_intro_always` - Always skip intros, without asking. Default: `false`

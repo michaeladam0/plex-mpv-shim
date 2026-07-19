@@ -155,6 +155,15 @@ class PlayerManager(object):
             else:
                 mpv_options["scripts"] = get_resource("mouse.lua")
 
+        # When enabled, have mpv write its own verbose init log to the config
+        # directory. Unlike the IPC log (which only starts after we attach), this
+        # captures the process from launch -- useful for diagnosing a slow or
+        # failing start. Forwarded as --log-file to both backends.
+        if settings.mpv_log_file:
+            log_file = conffile.get(APP_NAME, "mpv.log")
+            mpv_options["log_file"] = log_file
+            log.debug("PlayerManager::_init_mpv writing mpv log to %s", log_file)
+
         if not (settings.mpv_ext and settings.mpv_ext_no_ovr):
             mpv_options["include"] = conffile.get(APP_NAME, "mpv.conf", True)
             mpv_options["input_conf"] = conffile.get(APP_NAME, "input.conf", True)
