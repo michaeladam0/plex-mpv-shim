@@ -5,7 +5,7 @@
 #define MyAppVersion "1.11.1"
 #define MyAppPublisher "Ian Walton"
 #define MyAppURL "https://github.com/iwalton3/plex-mpv-shim"
-#define MyAppExeName "run.exe"
+#define MyAppExeName "plex-mpv-shim.exe"
 
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
@@ -38,7 +38,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "dist\run\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\plex-mpv-shim\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]

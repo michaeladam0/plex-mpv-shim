@@ -97,7 +97,7 @@ def main():
         _relaunch()
 
     # Force-exit: python-mpv-jsonipc's IPC reader thread is non-daemon and can
-    # outlive the cleanup above, keeping run.exe alive after the tray app closes.
+    # outlive the cleanup above, keeping the exe alive after the tray app closes.
     os._exit(0)
 
 def _relaunch():
