@@ -93,9 +93,34 @@ def main():
         notificationListener.stop()
         gdm.stop_all()
 
+    if getattr(userInterface, "restart_requested", False):
+        _relaunch()
+
     # Force-exit: python-mpv-jsonipc's IPC reader thread is non-daemon and can
     # outlive the cleanup above, keeping run.exe alive after the tray app closes.
     os._exit(0)
+
+def _relaunch():
+    """
+    Re-exec the shim in place after a settings change (or tray "Restart")
+    requested it. The teardown in main()'s finally block has already run, so the
+    old mpv/server/threads are gone before we replace the process image.
+    """
+    import subprocess
+    if getattr(sys, "frozen", False):
+        args = [sys.executable] + sys.argv[1:]
+    else:
+        args = [sys.executable, "-m", APP_NAME.replace("-", "_")] + sys.argv[1:]
+    log.info("Relaunching: %s", " ".join(args))
+    try:
+        os.execv(args[0], args)
+    except Exception:
+        # execv can fail (e.g. odd frozen layouts); fall back to a fresh process.
+        log.warning("execv relaunch failed; spawning a new process instead.", exc_info=True)
+        try:
+            subprocess.Popen(args)
+        except Exception:
+            log.error("Relaunch failed.", exc_info=True)
 
 if __name__ == "__main__":
     main()

@@ -7,12 +7,15 @@ import subprocess
 from multiprocessing import Process, Queue
 import threading
 import sys
+import time
 import logging
 import queue
 import os.path
 
 APP_NAME = "plex-mpv-shim"
 from .conffile import confdir
+from .conf import settings
+from .preferences import PreferencesWindow, RestartPromptWindow, RESTART_KEYS
 
 if (sys.platform.startswith("win32") or sys.platform.startswith("cygwin")) and getattr(sys, 'frozen', False):
     # Detect if bundled via pyinstaller.
@@ -171,6 +174,12 @@ class UserInterface:
         self.icon_stop = lambda: None
         self.log_window = None
         self.preferences_window = None
+        self.restart_prompt_window = None
+        # Set true when a change (or the tray "Restart") asks us to relaunch;
+        # mpv_shim.main reads it after the run loop exits and re-execs.
+        self.restart_requested = False
+        # Deferred restart: relaunch once the current playback ends.
+        self.restart_after_playback = False
 
     def run(self):
         self.queue = Queue()
@@ -178,31 +187,133 @@ class UserInterface:
         self.process = STrayProcess(self.queue, self.r_queue)
         self.process.start()
 
+        watcher = threading.Thread(target=self._watch_playback, daemon=True)
+        watcher.start()
+
         while True:
             try:
                 action, param = self.r_queue.get()
-                if hasattr(self, action):
-                    getattr(self, action)()
-                elif action == "die":
+                if action == "die":
                     self._die()
                     break
+                elif action == "restart_app":
+                    self.restart_requested = True
+                    self._die()
+                    break
+                elif action == "restart_requested_ui":
+                    self._prompt_restart()
+                elif action == "arm_restart_after_playback":
+                    self.restart_after_playback = True
+                elif hasattr(self, action):
+                    getattr(self, action)()
             except KeyboardInterrupt:
                 log.info("Stopping due to CTRL+C.")
                 self._die()
                 break
-    
+
     def handle(self, action, params=None):
         self.queue.put((action, params))
 
     def stop(self):
         self.handle("die")
-    
+
     def _die(self):
         self.process.terminate()
         self.dead = True
 
         if self.log_window and not self.log_window.dead:
             self.log_window.stop()
+        if self.preferences_window and not self.preferences_window.dead:
+            self.preferences_window.stop()
+        if self.restart_prompt_window and not self.restart_prompt_window.dead:
+            self.restart_prompt_window.stop()
+
+    def _is_playing(self):
+        try:
+            from .player import playerManager
+            return playerManager._media_item is not None
+        except Exception:
+            return False
+
+    def _watch_playback(self):
+        """
+        When a deferred restart is armed, relaunch as soon as the current
+        playback ends.
+        """
+        while not self.dead:
+            if self.restart_after_playback and not self._is_playing():
+                self.restart_after_playback = False
+                self.r_queue.put(("restart_app", None))
+            time.sleep(1)
+
+    def _prompt_restart(self):
+        """
+        Tray "Restart" clicked. If nothing is playing, relaunch immediately;
+        otherwise pop a dialog offering now / after-playback / cancel.
+        """
+        if not self._is_playing():
+            self.r_queue.put(("restart_app", None))
+            return
+        if self.restart_prompt_window and not self.restart_prompt_window.dead:
+            return
+        self.restart_prompt_window = RestartPromptWindow(
+            is_playing=True,
+            on_now=lambda: self.r_queue.put(("restart_app", None)),
+            on_after=lambda: self.r_queue.put(("arm_restart_after_playback", None)),
+        )
+        self.restart_prompt_window.start()
+
+    def show_preferences(self):
+        if self.preferences_window and not self.preferences_window.dead:
+            return
+        self.preferences_window = PreferencesWindow(
+            initial=dict(settings._data),
+            is_playing=self._is_playing(),
+            on_apply=self.apply_settings,
+            on_restart_now=lambda: self.r_queue.put(("restart_app", None)),
+            on_restart_after=lambda: self.r_queue.put(("arm_restart_after_playback", None)),
+        )
+        self.preferences_window.start()
+
+    def apply_settings(self, changed):
+        """
+        Apply changed settings to the live ``settings`` object (which persists
+        to disk and fires listeners) and nudge the few things that can update
+        without a restart. Runs on the PreferencesWindow thread, in the main
+        process, so it can touch playerManager directly.
+        """
+        for key, value in changed.items():
+            try:
+                setattr(settings, key, value)
+            except Exception:
+                log.warning("Failed to apply setting %s", key, exc_info=True)
+
+        if "app_log_level" in changed:
+            mapping = {"debug": logging.DEBUG, "info": logging.INFO,
+                       "warning": logging.WARNING, "error": logging.ERROR,
+                       "critical": logging.CRITICAL}
+            logging.getLogger().setLevel(mapping.get(str(settings.app_log_level).lower(),
+                                                      logging.INFO))
+
+        try:
+            from .player import playerManager
+        except Exception:
+            playerManager = None
+
+        if playerManager is not None:
+            if "enable_osc" in changed and playerManager._player is not None:
+                try:
+                    playerManager._player.osc = settings.enable_osc
+                except Exception:
+                    log.debug("Could not set osc live", exc_info=True)
+            if playerManager._media_item is not None and (
+                    {"subtitle_size", "subtitle_color", "subtitle_position"} & set(changed)):
+                playerManager.put_task(playerManager.update_subtitle_visuals)
+            if "fullscreen" in changed and playerManager._player is not None:
+                try:
+                    playerManager._player.fs = settings.fullscreen
+                except Exception:
+                    log.debug("Could not set fullscreen live", exc_info=True)
 
     def login_servers(self):
         is_logged_in = clientManager.try_connect()
@@ -236,9 +347,12 @@ class STrayProcess(Process):
             self.icon_stop()
 
         menu_items = [
+            MenuItem("Preferences", get_wrapper("show_preferences")),
             MenuItem("Show Console", get_wrapper("show_console")),
             MenuItem("Application Menu", get_wrapper("open_player_menu")),
             MenuItem("Open Config Folder", get_wrapper("open_config_brs")),
+            Menu.SEPARATOR,
+            MenuItem("Restart", get_wrapper("restart_requested_ui")),
             MenuItem("Quit", die)
         ]
 
