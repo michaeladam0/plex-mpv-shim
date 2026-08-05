@@ -450,6 +450,10 @@ class _ScrollFrame(ttk.Frame):
 
     def __init__(self, parent, bg=None):
         super().__init__(parent)
+        self.wrap_labels = []
+        self._last_width = -1
+        self._pending = None
+
         canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0, height=1)
         if bg:
             canvas.configure(bg=bg)
@@ -457,9 +461,10 @@ class _ScrollFrame(ttk.Frame):
         canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
+        self.canvas = canvas
 
         self.inner = ttk.Frame(canvas)
-        window = canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.window = canvas.create_window((0, 0), window=self.inner, anchor="nw")
 
         # Clamp the scrollbar: when the content fits, a drag would otherwise
         # slide it down and leave blank space at the top, because Tk's yview
@@ -471,23 +476,49 @@ class _ScrollFrame(ttk.Frame):
                 canvas.yview(*args)
         vsb.configure(command=_yview)
 
-        def _sync(_event=None):
-            # Match the inner frame's width to the canvas and set the scroll
-            # region to exactly the content -- otherwise the thumb is mis-sized
-            # and you can scroll into empty space past the content.
-            canvas.itemconfigure(window, width=canvas.winfo_width())
-            canvas.configure(scrollregion=canvas.bbox("all"))
-        self.inner.bind("<Configure>", _sync)
-        canvas.bind("<Configure>", _sync)
+        # Keep the inner width matched immediately (cheap), but debounce the
+        # expensive relayout (re-wrapping labels + recomputing the scroll
+        # region). Doing that work synchronously on every <Configure> made
+        # resizing crawl, because each wrap change reflowed the content and
+        # fired more <Configure> events.
+        def _on_canvas(event):
+            canvas.itemconfigure(self.window, width=event.width)
+            self._schedule()
+        canvas.bind("<Configure>", _on_canvas)
+        self.inner.bind("<Configure>", lambda _e: self._schedule())
 
-        # Bind the wheel only while the pointer is over this canvas, so the tabs
-        # don't fight over one global binding, and only scroll when the content
-        # actually overflows.
+        # Bind the wheel only while the pointer is over this canvas, so the
+        # panes don't fight over one global binding, and only scroll when the
+        # content actually overflows.
         def _on_wheel(event):
             if self.inner.winfo_height() > canvas.winfo_height():
                 canvas.yview_scroll(int(-event.delta / 120), "units")
         canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _on_wheel))
         canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+
+    def register_wrap(self, label):
+        """Register a full-width label to re-wrap to the pane width."""
+        self.wrap_labels.append(label)
+
+    def _schedule(self):
+        if self._pending is not None:
+            try:
+                self.canvas.after_cancel(self._pending)
+            except Exception:
+                pass
+        self._pending = self.canvas.after(60, self._apply_layout)
+
+    def _apply_layout(self):
+        self._pending = None
+        width = self.canvas.winfo_width()
+        # Only re-wrap when the width actually changed -- otherwise a height
+        # change (from wrapping) would loop back here and re-wrap endlessly.
+        if width != self._last_width:
+            self._last_width = width
+            wrap = max(120, width - 24)
+            for label in self.wrap_labels:
+                label.configure(wraplength=wrap)
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
 
 class PreferencesWindowProcess(Process):
@@ -566,7 +597,7 @@ class PreferencesWindowProcess(Process):
         for category, fields in SETTINGS_SCHEMA:
             pane = _ScrollFrame(content, bg=p["bg"])
             pane.grid(row=0, column=0, sticky="nsew")
-            self._build_fields(pane.inner, fields)
+            self._build_fields(pane, fields)
             self._panes[category] = pane
 
         def _on_select(_event=None):
@@ -648,12 +679,9 @@ class PreferencesWindowProcess(Process):
         return ttk.Label(parent, text="ⓘ", foreground=self.palette["muted"],
                          cursor="question_arrow")
 
-    def _build_fields(self, parent, fields):
+    def _build_fields(self, pane, fields):
+        parent = pane.inner
         parent.columnconfigure(1, weight=1)
-        # Full-width labels (section headers, warnings) that must re-wrap as the
-        # window resizes -- a fixed wraplength either never wraps (truncating) or
-        # wraps too wide and overflows a narrow window.
-        wrap_labels = []
         row = 0
         for field in fields:
             key = field["key"]
@@ -667,7 +695,7 @@ class PreferencesWindowProcess(Process):
                                bg=self.palette["bg"], font=("TkDefaultFont", 9, "bold"),
                                justify="left", anchor="w")
                 hdr.grid(row=row, column=0, columnspan=2, sticky="ew", padx=8, pady=(12, 2))
-                wrap_labels.append(hdr)
+                pane.register_wrap(hdr)
                 row += 1
 
             # Label plus a small drawn info badge that hints at the tooltip.
@@ -690,6 +718,18 @@ class PreferencesWindowProcess(Process):
                     field.get("values_from"), [])
                 widget = ttk.Combobox(parent, textvariable=var, values=values)
                 widget.grid(row=row, column=1, sticky="ew", padx=8)
+            elif kind == "path":
+                # Entry + a Browse button that opens the OS file/folder picker.
+                var = tk.StringVar(value="" if value is None else str(value))
+                pathbox = ttk.Frame(parent)
+                pathbox.grid(row=row, column=1, sticky="ew", padx=8)
+                pathbox.columnconfigure(0, weight=1)
+                widget = ttk.Entry(pathbox, textvariable=var)
+                widget.grid(row=0, column=0, sticky="ew")
+                browse = ttk.Button(pathbox, text="Browse…", width=9,
+                                    command=lambda f=field, v=var: self._browse_path(f, v))
+                browse.grid(row=0, column=1, padx=(5, 0))
+                self._widgets[key + "__browse"] = browse
             else:
                 var = tk.StringVar(value="" if value is None else str(value))
                 widget = ttk.Entry(parent, textvariable=var)
@@ -710,7 +750,7 @@ class PreferencesWindowProcess(Process):
                                bg=self.palette["bg"], anchor="w",
                                font=("TkDefaultFont", 8, "bold"), justify="left")
                 lbl.grid(row=row, column=0, columnspan=2, sticky="ew", padx=8)
-                wrap_labels.append(lbl)
+                pane.register_wrap(lbl)
                 row += 1
 
             note = self._field_notes.get(key)
@@ -719,18 +759,28 @@ class PreferencesWindowProcess(Process):
                                 bg=self.palette["bg"], anchor="w", justify="left",
                                 font=("TkDefaultFont", 8))
                 nlbl.grid(row=row, column=0, columnspan=2, sticky="ew", padx=8)
-                wrap_labels.append(nlbl)
+                pane.register_wrap(nlbl)
                 row += 1
 
-        # Re-wrap the full-width labels to the pane's current width.
-        def _rewrap(event, labels=wrap_labels):
-            width = event.width - 24
-            if width > 100:
-                for lbl in labels:
-                    lbl.configure(wraplength=width)
-        # add="+" so this doesn't clobber _ScrollFrame's own <Configure> binding
-        # (which keeps the scroll region in sync) on the same inner frame.
-        parent.bind("<Configure>", _rewrap, add="+")
+    def _browse_path(self, field, var):
+        """Open the OS file/folder picker for a path field and store the result."""
+        from tkinter import filedialog
+        current = var.get().strip()
+        initial_dir = ""
+        if current:
+            initial_dir = current if os.path.isdir(current) else os.path.dirname(current)
+        if field.get("browse") == "folder":
+            chosen = filedialog.askdirectory(
+                parent=self.root, title="Select folder", mustexist=False,
+                initialdir=initial_dir or None)
+        else:
+            chosen = filedialog.askopenfilename(
+                parent=self.root, title="Select file",
+                initialdir=initial_dir or None)
+        if chosen:
+            # Tk returns forward slashes; store the native form the rest of the
+            # app expects (e.g. backslashes for a Windows mpv path).
+            var.set(os.path.normpath(chosen))
 
     def _wire_dependencies(self):
         """
@@ -757,12 +807,14 @@ class PreferencesWindowProcess(Process):
                     on = bool(ctrl_var.get())
                     for dep_key, want in dep_specs:
                         state = "normal" if on == want else "disabled"
-                        widget = self._widgets.get(dep_key)
-                        if widget is not None:
-                            try:
-                                widget.configure(state=state)
-                            except Exception:
-                                pass
+                        # The field widget plus its Browse button, if any.
+                        for wkey in (dep_key, dep_key + "__browse"):
+                            widget = self._widgets.get(wkey)
+                            if widget is not None:
+                                try:
+                                    widget.configure(state=state)
+                                except Exception:
+                                    pass
                 return cb
 
             callback = make_cb(dependents, var)
