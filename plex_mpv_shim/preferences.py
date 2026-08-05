@@ -97,6 +97,12 @@ SETTINGS_SCHEMA = [
         {"key": "audio_dtspassthrough", "label": "DTS passthrough",    "kind": "bool",
          "tip": "Advertise DTS passthrough so the server sends DTS audio "
                 "untouched. Needs a receiver that can decode DTS."},
+        {"key": "audio_atmos_passthrough", "label": "Atmos / lossless passthrough", "kind": "bool",
+         "tip": "Advertise E-AC3 (Dolby Digital+/Atmos) and TrueHD (Atmos) as "
+                "direct-play so the server sends them untouched, keeping the "
+                "Atmos metadata. Atmos is lost if the server transcodes. Also "
+                "needs mpv.conf 'audio-spdif=ac3,dts,eac3,truehd' and an "
+                "Atmos-capable receiver over HDMI."},
     ]),
     ("Subtitles", [
         {"key": "subtitle_size",     "label": "Subtitle size",         "kind": "int", "min": 1,
@@ -526,6 +532,10 @@ class PreferencesWindowProcess(Process):
 
     def _build_fields(self, parent, fields):
         parent.columnconfigure(1, weight=1)
+        # Full-width labels (section headers, warnings) that must re-wrap as the
+        # window resizes -- a fixed wraplength either never wraps (truncating) or
+        # wraps too wide and overflows a narrow window.
+        wrap_labels = []
         row = 0
         for field in fields:
             key = field["key"]
@@ -536,8 +546,10 @@ class PreferencesWindowProcess(Process):
             section = field.get("section")
             if section:
                 hdr = tk.Label(parent, text=section, fg=self.palette["fg"],
-                               bg=self.palette["bg"], font=("TkDefaultFont", 9, "bold"))
-                hdr.grid(row=row, column=0, columnspan=2, sticky="w", padx=8, pady=(12, 2))
+                               bg=self.palette["bg"], font=("TkDefaultFont", 9, "bold"),
+                               justify="left", anchor="w")
+                hdr.grid(row=row, column=0, columnspan=2, sticky="ew", padx=8, pady=(12, 2))
+                wrap_labels.append(hdr)
                 row += 1
 
             # Label plus a small drawn info badge that hints at the tooltip.
@@ -575,10 +587,21 @@ class PreferencesWindowProcess(Process):
             warn = field.get("warn")
             if warn:
                 lbl = tk.Label(parent, text="⚠ " + warn, fg=self.palette["warn"],
-                               bg=self.palette["bg"],
-                               font=("TkDefaultFont", 8, "bold"), wraplength=340, justify="left")
-                lbl.grid(row=row, column=1, sticky="w", padx=8)
+                               bg=self.palette["bg"], anchor="w",
+                               font=("TkDefaultFont", 8, "bold"), justify="left")
+                lbl.grid(row=row, column=0, columnspan=2, sticky="ew", padx=8)
+                wrap_labels.append(lbl)
                 row += 1
+
+        # Re-wrap the full-width labels to the pane's current width.
+        def _rewrap(event, labels=wrap_labels):
+            width = event.width - 24
+            if width > 100:
+                for lbl in labels:
+                    lbl.configure(wraplength=width)
+        # add="+" so this doesn't clobber _ScrollFrame's own <Configure> binding
+        # (which keeps the scroll region in sync) on the same inner frame.
+        parent.bind("<Configure>", _rewrap, add="+")
 
     def _wire_dependencies(self):
         """

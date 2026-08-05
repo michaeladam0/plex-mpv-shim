@@ -18,6 +18,7 @@ class Settings(object):
         "http_port":            "3000",
         "audio_ac3passthrough": False,
         "audio_dtspassthrough": False,
+        "audio_atmos_passthrough": False,
         "client_uuid":          str(uuid.uuid4()),
         "enable_play_queue":    True,
         "allow_http":           False,

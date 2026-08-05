@@ -266,6 +266,12 @@ class Video(MediaItem):
         if settings.audio_dtspassthrough:
             audio_formats.append("add-transcode-target-audio-codec(type=videoProfile&context=streaming&protocol=hls&audioCodec=dca)")
             protocols += ",dts{bitrate:800000&channels:8}"
+        if settings.audio_atmos_passthrough:
+            # Atmos rides inside E-AC3 (DD+) or TrueHD and is only preserved when
+            # the stream is copied, not transcoded. Advertise both as direct-play
+            # protocols so the server remuxes the original untouched. (Actual
+            # bitstreaming to the receiver still needs mpv.conf audio-spdif.)
+            protocols += ",eac3{bitrate:1536000&channels:8},truehd{channels:8}"
 
         return audio_formats, protocols
 
