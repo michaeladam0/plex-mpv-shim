@@ -75,9 +75,13 @@ SETTINGS_SCHEMA = [
     ]),
     ("Skip", [
         {"key": "skip_intro_always",   "label": "Always skip intros",   "kind": "bool"},
-        {"key": "skip_intro_prompt",   "label": "Prompt to skip intros","kind": "bool"},
+        {"key": "skip_intro_prompt",   "label": "Prompt to skip intros","kind": "bool",
+         "depends_on": "skip_intro_always", "depends_value": False,
+         "help": "Ignored while intros are always skipped."},
         {"key": "skip_credits_always", "label": "Always skip credits",  "kind": "bool"},
-        {"key": "skip_credits_prompt", "label": "Prompt to skip credits","kind": "bool"},
+        {"key": "skip_credits_prompt", "label": "Prompt to skip credits","kind": "bool",
+         "depends_on": "skip_credits_always", "depends_value": False,
+         "help": "Ignored while credits are always skipped."},
     ]),
     ("Commands", [
         {"key": "pre_media_cmd",   "label": "Pre-media command",   "kind": "str", "nullable": True},
@@ -86,7 +90,9 @@ SETTINGS_SCHEMA = [
         {"key": "idle_cmd",        "label": "Idle command",        "kind": "str", "nullable": True},
         {"key": "idle_cmd_delay",  "label": "Idle delay (s)",      "kind": "int", "min": 0},
         {"key": "idle_when_paused","label": "Idle when paused",    "kind": "bool"},
-        {"key": "stop_idle",       "label": "Stop on idle",        "kind": "bool"},
+        {"key": "stop_idle",       "label": "Stop on idle",        "kind": "bool",
+         "depends_on": "idle_when_paused",
+         "help": "Only applies when “Idle when paused” is on."},
     ]),
     ("Input", [
         {"key": "media_key_seek", "label": "Media keys seek",  "kind": "bool"},
@@ -131,13 +137,20 @@ SETTINGS_SCHEMA = [
     ]),
     ("Video (shaders/SVP)", [
         {"key": "shader_pack_enable",   "label": "Enable shader pack",   "kind": "bool", "restart": True},
-        {"key": "shader_pack_custom",   "label": "Custom shader pack",   "kind": "bool", "restart": True},
-        {"key": "shader_pack_remember", "label": "Remember shader choice","kind": "bool"},
-        {"key": "shader_pack_profile",  "label": "Shader profile",       "kind": "str", "nullable": True},
-        {"key": "shader_pack_subtype",  "label": "Shader subtype",       "kind": "str"},
+        {"key": "shader_pack_custom",   "label": "Custom shader pack",   "kind": "bool", "restart": True,
+         "depends_on": "shader_pack_enable",
+         "section": "Shader pack (only used when “Enable shader pack” is on)"},
+        {"key": "shader_pack_remember", "label": "Remember shader choice","kind": "bool",
+         "depends_on": "shader_pack_enable"},
+        {"key": "shader_pack_profile",  "label": "Shader profile",       "kind": "str", "nullable": True,
+         "depends_on": "shader_pack_enable"},
+        {"key": "shader_pack_subtype",  "label": "Shader subtype",       "kind": "str",
+         "depends_on": "shader_pack_enable"},
         {"key": "svp_enable",  "label": "Enable SVP",     "kind": "bool", "restart": True},
-        {"key": "svp_url",     "label": "SVP URL",        "kind": "str"},
+        {"key": "svp_url",     "label": "SVP URL",        "kind": "str", "depends_on": "svp_enable",
+         "section": "SVP (only used when “Enable SVP” is on)"},
         {"key": "svp_socket",  "label": "SVP socket",     "kind": "str", "nullable": True, "restart": True,
+         "depends_on": "svp_enable",
          "warn": "Advanced: SVP IPC socket path."},
     ]),
 ]
@@ -356,25 +369,28 @@ class PreferencesWindowProcess(Process):
     def _wire_dependencies(self):
         """
         Enable/disable fields that only apply in a given mode. Each dependent
-        field names a controlling boolean (``depends_on``); when that boolean is
-        off the dependent widgets are greyed out (and their unchanged values are
-        left as-is on save).
+        field names a controlling boolean (``depends_on``) and the value that
+        controller must hold for the field to apply (``depends_value``, default
+        True). When the controller doesn't match, the dependent widgets are
+        greyed out (their unchanged values are left as-is on save).
         """
         deps = {}
         for key, field in ALL_FIELDS.items():
             controller = field.get("depends_on")
             if controller:
-                deps.setdefault(controller, []).append(key)
+                deps.setdefault(controller, []).append(
+                    (key, field.get("depends_value", True)))
 
         for controller, dependents in deps.items():
             var = self._vars.get(controller)
             if var is None:
                 continue
 
-            def make_cb(dep_keys, ctrl_var):
+            def make_cb(dep_specs, ctrl_var):
                 def cb(*_args):
-                    state = "normal" if bool(ctrl_var.get()) else "disabled"
-                    for dep_key in dep_keys:
+                    on = bool(ctrl_var.get())
+                    for dep_key, want in dep_specs:
+                        state = "normal" if on == want else "disabled"
                         widget = self._widgets.get(dep_key)
                         if widget is not None:
                             try:
