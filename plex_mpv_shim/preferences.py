@@ -396,13 +396,23 @@ class _ScrollFrame(ttk.Frame):
         canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0, height=1)
         if bg:
             canvas.configure(bg=bg)
-        vsb = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        vsb = ttk.Scrollbar(self, orient="vertical")
         canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
 
         self.inner = ttk.Frame(canvas)
         window = canvas.create_window((0, 0), window=self.inner, anchor="nw")
+
+        # Clamp the scrollbar: when the content fits, a drag would otherwise
+        # slide it down and leave blank space at the top, because Tk's yview
+        # doesn't pin the region to the viewport top in that case.
+        def _yview(*args):
+            if self.inner.winfo_height() <= canvas.winfo_height():
+                canvas.yview_moveto(0)
+            else:
+                canvas.yview(*args)
+        vsb.configure(command=_yview)
 
         def _sync(_event=None):
             # Match the inner frame's width to the canvas and set the scroll
@@ -503,6 +513,17 @@ class PreferencesWindowProcess(Process):
             pass
         self.root.after(200, self._poll_parent)
 
+    def _info_icon(self, parent):
+        """A small drawn 'i' badge (crisp at any DPI, unlike a font glyph)."""
+        p = self.palette
+        size = 14
+        canvas = tk.Canvas(parent, width=size, height=size, bg=p["bg"],
+                           highlightthickness=0, cursor="question_arrow")
+        canvas.create_oval(1, 1, size - 1, size - 1, fill=p["muted"], outline="")
+        canvas.create_text(size / 2 + 0.5, size / 2 + 1, text="i", fill=p["bg"],
+                           font=("TkDefaultFont", 8, "bold"))
+        return canvas
+
     def _build_fields(self, parent, fields):
         parent.columnconfigure(1, weight=1)
         row = 0
@@ -519,9 +540,15 @@ class PreferencesWindowProcess(Process):
                 hdr.grid(row=row, column=0, columnspan=2, sticky="w", padx=8, pady=(12, 2))
                 row += 1
 
-            # A trailing "ⓘ" hints that hovering the row reveals a tooltip.
-            row_label = ttk.Label(parent, text=label + "  ⓘ", cursor="question_arrow")
-            row_label.grid(row=row, column=0, sticky="w", padx=8, pady=4)
+            # Label plus a small drawn info badge that hints at the tooltip.
+            cell = ttk.Frame(parent)
+            cell.grid(row=row, column=0, sticky="w", padx=8, pady=4)
+            row_label = ttk.Label(cell, text=label)
+            row_label.pack(side="left")
+            tip = field.get("tip")
+            icon = self._info_icon(cell) if tip else None
+            if icon is not None:
+                icon.pack(side="left", padx=(5, 0))
 
             if kind == "bool":
                 var = tk.BooleanVar(value=bool(value))
@@ -536,10 +563,10 @@ class PreferencesWindowProcess(Process):
                 widget = ttk.Entry(parent, textvariable=var)
                 widget.grid(row=row, column=1, sticky="ew", padx=8)
 
-            tip = field.get("tip")
             if tip:
-                _Tooltip(row_label, tip, self.palette)
-                _Tooltip(widget, tip, self.palette)
+                for target in (cell, row_label, icon, widget):
+                    if target is not None:
+                        _Tooltip(target, tip, self.palette)
 
             self._vars[key] = var
             self._widgets[key] = widget
