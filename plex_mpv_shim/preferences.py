@@ -500,15 +500,23 @@ class PreferencesWindowProcess(Process):
         self._widgets = {}
         self._dynamic_values = {}
         self._field_notes = {}
+        self._info_photo = None
         Process.__init__(self)
 
     def run(self):
         root = tk.Tk()
         self.root = root
         root.title("Plex MPV Shim - Preferences")
-        root.geometry("620x620")
+        # Scale the initial size with the display DPI so it isn't cramped on
+        # high-DPI screens (tk scaling is pixels-per-point; 1.333 at 96 dpi).
+        try:
+            factor = max(1.0, float(root.tk.call("tk", "scaling")) * 0.75)
+        except Exception:
+            factor = 1.0
+        root.geometry("%dx%d" % (int(620 * factor), int(620 * factor)))
         self.palette = apply_theme(root)
         p = self.palette
+        self._info_photo = self._build_info_photo()
 
         # Populate the shader dropdowns from the pack that would actually be
         # used, and note whether a custom pack exists in the config dir.
@@ -596,16 +604,49 @@ class PreferencesWindowProcess(Process):
             pass
         self.root.after(200, self._poll_parent)
 
-    def _info_icon(self, parent):
-        """A small drawn 'i' badge (crisp at any DPI, unlike a font glyph)."""
+    def _build_info_photo(self):
+        """
+        Render the info badge once as an antialiased image sized to the current
+        font's line height, so it stays crisp and scales with the display DPI
+        (a fixed-pixel Canvas stayed tiny and jagged on high-DPI screens).
+        Returns a PhotoImage, or None to fall back to a text glyph.
+        """
+        try:
+            import tkinter.font as tkfont
+            from PIL import Image, ImageDraw, ImageTk
+        except Exception:
+            return None
+        try:
+            line = tkfont.nametofont("TkDefaultFont").metrics("linespace")
+        except Exception:
+            line = 16
+        size = max(12, int(line * 0.95))
+
         p = self.palette
-        size = 14
-        canvas = tk.Canvas(parent, width=size, height=size, bg=p["bg"],
-                           highlightthickness=0, cursor="question_arrow")
-        canvas.create_oval(1, 1, size - 1, size - 1, fill=p["muted"], outline="")
-        canvas.create_text(size / 2 + 0.5, size / 2 + 1, text="i", fill=p["bg"],
-                           font=("TkDefaultFont", 8, "bold"))
-        return canvas
+        scale = 4  # supersample, then downscale for smooth edges
+        big = size * scale
+        img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.ellipse([scale, scale, big - scale, big - scale], fill=p["muted"])
+
+        # Knock out a centred "i": dot + stem, both in the background colour.
+        cx = big / 2
+        dot_r = big * 0.085
+        dot_cy = big * 0.31
+        draw.ellipse([cx - dot_r, dot_cy - dot_r, cx + dot_r, dot_cy + dot_r], fill=p["bg"])
+        stem_w = big * 0.075
+        draw.rectangle([cx - stem_w, big * 0.44, cx + stem_w, big * 0.73], fill=p["bg"])
+
+        img = img.resize((size, size), Image.LANCZOS)
+        return ImageTk.PhotoImage(img)
+
+    def _info_icon(self, parent):
+        """A small info badge that reveals the setting's tooltip on hover."""
+        if self._info_photo is not None:
+            return ttk.Label(parent, image=self._info_photo, cursor="question_arrow")
+        # Fallback if imaging isn't available: a plain glyph.
+        return ttk.Label(parent, text="ⓘ", foreground=self.palette["muted"],
+                         cursor="question_arrow")
 
     def _build_fields(self, parent, fields):
         parent.columnconfigure(1, weight=1)
