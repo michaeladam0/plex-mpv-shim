@@ -558,7 +558,11 @@ class XMLCollection(object):
         self.path       = urllib.parse.urlparse(url)
         self.server_url = self.path.scheme + "://" + self.path.netloc
         self.context   = ssl.create_default_context(cafile=certifi.where())
-        self.tree       = et.parse(urllib.request.urlopen(get_plex_url(url), context=self.context))
+        # Bound the fetch: without a timeout a stalled/unreachable server (new
+        # connections timing out while the path is degraded) hangs the caller
+        # indefinitely -- for a playMedia this wedges the proxy-poll thread
+        # instead of failing fast and bouncing back to the menu.
+        self.tree       = et.parse(urllib.request.urlopen(get_plex_url(url), context=self.context, timeout=15))
 
     def get_path(self, path):
         parsed_url = urllib.parse.urlparse(path)

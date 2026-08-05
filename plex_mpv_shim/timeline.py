@@ -19,9 +19,20 @@ from .player import playerManager
 from .subscribers import remoteSubscriberManager
 import urllib.parse
 
-from .utils import Timer, safe_urlopen, mpv_color_to_plex, get_plex_url, get_session
+from .utils import Timer, mpv_color_to_plex, get_plex_url, get_session, sanitize_msg
 
 log = logging.getLogger("timeline")
+
+# The proxy timeline is pushed once per second during playback. Opening a fresh
+# TLS connection every time churns thousands of short-lived handshakes over a
+# session and is fragile: when new connections to the server stall (NAT/conntrack
+# pressure, a flaky path) but established ones survive, every fresh push times out
+# while an existing keep-alive connection would still go through. Reuse one pooled,
+# keep-alive connection instead so the pushes ride an established flow.
+_proxy_session = requests.Session()
+_proxy_adapter = requests.adapters.HTTPAdapter(pool_connections=2, pool_maxsize=4)
+_proxy_session.mount("http://", _proxy_adapter)
+_proxy_session.mount("https://", _proxy_adapter)
 
 # While idle we push a bare navigation/stopped frame to the proxy channel this
 # often. Without it the server ages out our player selection and the next
@@ -49,6 +60,11 @@ class TimelineManager(threading.Thread):
         # current stop; suppresses the repeats (matches the HTPC, which sends
         # one then goes quiet). Reset when playback resumes.
         self._proxy_stopped_sent = False
+
+        # Consecutive proxy-push failures; used to collapse the traceback spam
+        # when the server is unreachable (reset on the first success).
+        self._proxy_fail_streak = 0
+        self._ps_fail_streak    = 0
 
         # Terminal-stop tracking. Playback ending clears the active media item,
         # so stash the final item/position and re-announce state=stopped for a
@@ -181,7 +197,25 @@ class TimelineManager(threading.Thread):
             elif self.last_server_url:
                 server_url = self.last_server_url
             if server_url:
-                safe_urlopen("%s/:/timeline" % server_url, timeline, quiet=True)
+                # Reuse the pooled keep-alive connection instead of a fresh TLS
+                # handshake each second (same rationale as the proxy push): rides
+                # an established flow and stops churning short-lived connections.
+                url = get_plex_url("%s/:/timeline" % server_url, timeline, quiet=True)
+                try:
+                    resp = _proxy_session.get(url, timeout=5)
+                    if resp.status_code != 200:
+                        log.error("TimelineManager::SendTimelineToPlexServer HTTP %d for %s",
+                                  resp.status_code, sanitize_msg(url))
+                except Exception as e:
+                    self._ps_fail_streak += 1
+                    if self._ps_fail_streak == 1:
+                        log.warning("TimelineManager::SendTimelineToPlexServer error pushing timeline",
+                                    exc_info=True)
+                    else:
+                        log.warning("TimelineManager::SendTimelineToPlexServer still failing (x%d): %s",
+                                    self._ps_fail_streak, e.__class__.__name__)
+                else:
+                    self._ps_fail_streak = 0
         finally:
             if acquired:
                 self.sending_to_ps.release()
@@ -333,18 +367,27 @@ class TimelineManager(threading.Thread):
 
         url = get_plex_url("%s/player/proxy/timeline" % server_url, data, quiet=True)
         try:
-            resp = requests.post(url, data=body, headers={
+            resp = _proxy_session.post(url, data=body, headers={
                 "Content-Type":             "application/xml",
                 "X-Plex-Client-Identifier": settings.client_uuid,
             }, timeout=5)
             if resp.status_code == 200:
                 log.debug("TimelineManager::SendTimelineToProxy %s/player/proxy/timeline -> HTTP 200",
                           server_url)
+                self._proxy_fail_streak = 0
             else:
                 log.warning("TimelineManager::SendTimelineToProxy rejected (HTTP %s): %s",
                             resp.status_code, resp.text[:200])
-        except Exception:
-            log.warning("TimelineManager::SendTimelineToProxy error pushing proxy timeline", exc_info=True)
+        except Exception as e:
+            # A server that's gone/unreachable fails every ~1s push; a full
+            # traceback each time buries the log. Log the first failure of a
+            # streak in full, then collapse the repeats to a one-liner.
+            self._proxy_fail_streak += 1
+            if self._proxy_fail_streak == 1:
+                log.warning("TimelineManager::SendTimelineToProxy error pushing proxy timeline", exc_info=True)
+            else:
+                log.warning("TimelineManager::SendTimelineToProxy still failing (x%d): %s",
+                            self._proxy_fail_streak, e.__class__.__name__)
 
     def GetCurrentTimeline(self):
         # https://github.com/plexinc/plex-home-theater-public/blob/pht-frodo/plex/Client/PlexTimelineManager.cpp#L142
