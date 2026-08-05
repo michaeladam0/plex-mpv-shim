@@ -598,17 +598,29 @@ class PreferencesWindowProcess(Process):
         self._panes = {}
         for category, fields in SETTINGS_SCHEMA:
             pane = _ScrollFrame(content, bg=p["bg"])
-            pane.grid(row=0, column=0, sticky="nsew")
             self._build_fields(pane, fields)
             self._panes[category] = pane
+
+        # Show only the selected pane. Keeping every pane gridded (stacked) made
+        # all nine resize and reflow their content on every resize event, which
+        # is what made dragging choppy; grid_remove leaves the hidden ones
+        # unmanaged so only the visible pane does layout work.
+        self._current_pane = None
+
+        def _show(category):
+            if self._current_pane is not None:
+                self._current_pane.grid_remove()
+            pane = self._panes[category]
+            pane.grid(row=0, column=0, sticky="nsew")
+            self._current_pane = pane
 
         def _on_select(_event=None):
             sel = selector.curselection()
             if sel:
-                self._panes[categories[sel[0]]].tkraise()
+                _show(categories[sel[0]])
         selector.bind("<<ListboxSelect>>", _on_select)
         selector.selection_set(0)
-        self._panes[categories[0]].tkraise()
+        _show(categories[0])
 
         # Grey out settings that don't apply to the selected backend (e.g. the
         # external-mpv options when the built-in player is in use).

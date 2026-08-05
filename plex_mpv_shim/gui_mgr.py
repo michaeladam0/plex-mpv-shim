@@ -16,7 +16,7 @@ APP_NAME = "plex-mpv-shim"
 from .conffile import confdir
 from .conf import settings
 from .preferences import PreferencesWindow, RestartPromptWindow, RESTART_KEYS
-from .gui_theme import detect_dark
+from .gui_theme import detect_dark, apply_theme
 
 
 def _enable_win_dark_menus():
@@ -170,11 +170,26 @@ class LoggerWindowProcess(Process):
         root = tk.Tk()
         self.root = root
         root.title("Plex MPV Shim - Log")
-        text = tk.Text(root)
-        text.pack(side=tk.LEFT, fill=tk.BOTH, expand = tk.YES)
-        text.config(wrap=tk.WORD)
+        palette = apply_theme(root)
+
+        # A cleaner monospaced face than Tk's default fixed font, with
+        # per-platform fallbacks (Tk substitutes if the family is missing).
+        if sys.platform.startswith("win"):
+            mono = ("Consolas", 10)
+        elif sys.platform == "darwin":
+            mono = ("Menlo", 11)
+        else:
+            mono = ("DejaVu Sans Mono", 10)
+
+        text = tk.Text(root, font=mono, wrap=tk.WORD, borderwidth=0,
+                       padx=8, pady=6,
+                       bg=palette["entry_bg"], fg=palette["fg"],
+                       insertbackground=palette["fg"],
+                       selectbackground=palette["select"], selectforeground="#ffffff",
+                       highlightthickness=0)
+        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=tk.YES)
         self.text = text
-        yscroll = tk.Scrollbar(command=text.yview)
+        yscroll = ttk.Scrollbar(root, command=text.yview)
         text['yscrollcommand'] = yscroll.set
         yscroll.pack(side=tk.RIGHT, fill=tk.Y)
         text.config(state=tk.DISABLED)
