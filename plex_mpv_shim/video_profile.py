@@ -162,7 +162,7 @@ class VideoProfileManager:
         profile_option_list = [
             ("None (Disabled)", self.menu_handle, None)
         ]
-        for i, (profile_name, profile) in enumerate(self.profiles.items()):
+        for profile_name, profile in self.profiles.items():
             if (profile.get("subtype", None) is not None and
                 not settings.shader_pack_subtype in profile["subtype"]):
                 continue
@@ -170,6 +170,9 @@ class VideoProfileManager:
             profile_option_list.append(
                 (profile["displayname"], self.menu_handle, profile_name)
             )
+            # Highlight the active profile using its position in THIS list --
+            # not the enumerate index, which counts subtype-filtered entries
+            # too and lands on the wrong (middle) item.
             if profile_name == self.current_profile:
-                selected = i+1
+                selected = len(profile_option_list) - 1
         self.menu.put_menu("Select Shader Profile", profile_option_list, selected)
