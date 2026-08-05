@@ -12,6 +12,7 @@ writer (the main process) avoids the two clobbering each other.
 
 import os
 import re
+import json
 import socket
 import threading
 import queue
@@ -240,13 +241,14 @@ SETTINGS_SCHEMA = [
          "depends_on": "shader_pack_enable",
          "tip": "Remember the last shader profile you picked and re-apply it "
                 "next time."},
-        {"key": "shader_pack_profile",  "label": "Shader profile",       "kind": "str", "nullable": True,
-         "depends_on": "shader_pack_enable",
-         "tip": "Shader profile to load on startup. Blank = none."},
-        {"key": "shader_pack_subtype",  "label": "Shader subtype",       "kind": "str",
-         "depends_on": "shader_pack_enable",
-         "tip": "Which variant of the shader profiles to use (e.g. a quality "
-                "tier such as lq/mq/hq)."},
+        {"key": "shader_pack_profile",  "label": "Shader profile",       "kind": "choice",
+         "nullable": True, "values_from": "profiles", "depends_on": "shader_pack_enable",
+         "tip": "Shader profile to load on startup, from the active shader "
+                "pack. Blank = none."},
+        {"key": "shader_pack_subtype",  "label": "Shader subtype",       "kind": "choice",
+         "values_from": "subtypes", "depends_on": "shader_pack_enable",
+         "tip": "Which variant of the shader profiles to use (the quality tier "
+                "offered by the pack, e.g. lq/hq)."},
         {"key": "svp_enable",  "label": "Enable SVP",     "kind": "bool", "restart": True,
          "tip": "Integrate with SmoothVideo Project (SVP) for motion "
                 "interpolation / frame smoothing."},
@@ -266,6 +268,52 @@ ALL_FIELDS = {f["key"]: f for _cat, fields in SETTINGS_SCHEMA for f in fields}
 
 # Keys that only take effect on (re)start.
 RESTART_KEYS = {k for k, f in ALL_FIELDS.items() if f.get("restart")}
+
+
+APP_NAME = "plex-mpv-shim"
+
+
+def _read_pack_options(pack_dir):
+    """Return (profile_names, subtypes) from a shader pack dir, or None."""
+    for name in ("pack-next.json", "pack.json"):
+        pack_json = os.path.join(pack_dir, name)
+        if os.path.exists(pack_json):
+            try:
+                with open(pack_json, encoding="utf-8") as fh:
+                    pack = json.load(fh)
+            except Exception:
+                return None
+            profiles = pack.get("profiles") or {}
+            subtypes = set()
+            for profile in profiles.values():
+                for subtype in profile.get("subtype", []):
+                    subtypes.add(subtype)
+            return list(profiles), sorted(subtypes)
+    return None
+
+
+def load_shader_options(initial):
+    """
+    Discover the available shader profiles/subtypes for the dropdowns, reading
+    the same pack the player would (custom pack from the config dir when that's
+    enabled and present, otherwise the built-in one).
+
+    Returns (profile_names, subtypes, custom_available).
+    """
+    try:
+        from .utils import get_resource
+        from . import conffile
+        builtin_dir = get_resource("default_shader_pack")
+        custom_dir = conffile.get(APP_NAME, "shader_pack")
+    except Exception:
+        return [], [], False
+
+    custom_available = _read_pack_options(custom_dir) is not None
+    use_custom = bool(initial.get("shader_pack_custom")) and custom_available
+    active = _read_pack_options(custom_dir if use_custom else builtin_dir)
+    if active is None:
+        active = _read_pack_options(builtin_dir) or ([], [])
+    return active[0], active[1], custom_available
 
 
 def _port_free(port):
@@ -325,7 +373,10 @@ def coerce_and_validate(field, raw, current):
         return s, None, None
 
     if kind == "choice":
-        return str(raw).strip(), None, None
+        s = str(raw).strip()
+        if field.get("nullable") and s == "":
+            return None, None, None
+        return s, None, None
 
     if kind == "path":
         s = str(raw).strip()
@@ -447,6 +498,8 @@ class PreferencesWindowProcess(Process):
         self.is_playing = is_playing
         self._vars = {}
         self._widgets = {}
+        self._dynamic_values = {}
+        self._field_notes = {}
         Process.__init__(self)
 
     def run(self):
@@ -456,6 +509,30 @@ class PreferencesWindowProcess(Process):
         root.geometry("620x620")
         self.palette = apply_theme(root)
         p = self.palette
+
+        # Populate the shader dropdowns from the pack that would actually be
+        # used, and note whether a custom pack exists in the config dir.
+        profiles, subtypes, custom_available = load_shader_options(self.initial)
+        profile_values = [""] + list(profiles)
+        cur = self.initial.get("shader_pack_profile")
+        if cur and cur not in profile_values:
+            profile_values.append(cur)
+        subtype_values = list(subtypes)
+        cur = self.initial.get("shader_pack_subtype")
+        if cur and cur not in subtype_values:
+            subtype_values.append(cur)
+        self._dynamic_values = {
+            "profiles":  profile_values,
+            "subtypes":  subtype_values,
+        }
+        if custom_available:
+            self._field_notes["shader_pack_custom"] = (
+                "A custom shader pack was found in the config folder — turn this "
+                "on to use it.")
+        else:
+            self._field_notes["shader_pack_custom"] = (
+                "No custom shader pack in the config folder yet; turning this on "
+                "copies the built-in one there so you can edit it.")
 
         # Left-hand category list + stacked content panes. A vertical list never
         # truncates horizontally the way a row of notebook tabs does when the
@@ -568,7 +645,9 @@ class PreferencesWindowProcess(Process):
                 widget.grid(row=row, column=1, sticky="w", padx=8)
             elif kind == "choice":
                 var = tk.StringVar(value="" if value is None else str(value))
-                widget = ttk.Combobox(parent, textvariable=var, values=field["values"])
+                values = field.get("values") or self._dynamic_values.get(
+                    field.get("values_from"), [])
+                widget = ttk.Combobox(parent, textvariable=var, values=values)
                 widget.grid(row=row, column=1, sticky="ew", padx=8)
             else:
                 var = tk.StringVar(value="" if value is None else str(value))
@@ -591,6 +670,15 @@ class PreferencesWindowProcess(Process):
                                font=("TkDefaultFont", 8, "bold"), justify="left")
                 lbl.grid(row=row, column=0, columnspan=2, sticky="ew", padx=8)
                 wrap_labels.append(lbl)
+                row += 1
+
+            note = self._field_notes.get(key)
+            if note:
+                nlbl = tk.Label(parent, text=note, fg=self.palette["muted"],
+                                bg=self.palette["bg"], anchor="w", justify="left",
+                                font=("TkDefaultFont", 8))
+                nlbl.grid(row=row, column=0, columnspan=2, sticky="ew", padx=8)
+                wrap_labels.append(nlbl)
                 row += 1
 
         # Re-wrap the full-width labels to the pane's current width.
