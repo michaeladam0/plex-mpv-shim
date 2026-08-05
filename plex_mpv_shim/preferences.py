@@ -204,8 +204,12 @@ SETTINGS_SCHEMA = [
                 "mpv found on your PATH."},
         {"key": "mpv_ext_ipc",    "label": "External mpv IPC path", "kind": "str", "nullable": True,
          "restart": True, "depends_on": "mpv_ext",
-         "tip": "The IPC pipe/socket the shim uses to control the external mpv.",
-         "warn": "Advanced: named pipe / socket path for the external mpv IPC."},
+         "tip": "The IPC endpoint the shim uses to control the external mpv. "
+                "On Windows this is a named pipe (e.g. mpvpipe or "
+                "\\\\.\\pipe\\mpvpipe), not a file on disk; on Linux/macOS it's "
+                "a Unix socket path (e.g. /tmp/mpvsocket) mpv creates at "
+                "runtime. Not a browsable file.",
+         "warn": "Advanced: named pipe (Windows) / Unix socket (Linux/macOS), not a regular file."},
         {"key": "mpv_ext_start",  "label": "Start external mpv",   "kind": "bool", "restart": True,
          "depends_on": "mpv_ext",
          "tip": "Have the shim launch the mpv process itself. Turn off to "
@@ -257,9 +261,11 @@ SETTINGS_SCHEMA = [
          "tip": "Base URL of the SVP web API the shim talks to."},
         {"key": "svp_socket",  "label": "SVP socket",     "kind": "str", "nullable": True, "restart": True,
          "depends_on": "svp_enable",
-         "tip": "The IPC socket/pipe SVP uses to talk to mpv. Blank = a "
-                "platform default.",
-         "warn": "Advanced: SVP IPC socket path."},
+         "tip": "The IPC endpoint SVP uses to talk to mpv. On Windows this is a "
+                "named pipe (default mpvpipe), not a file on disk; on "
+                "Linux/macOS a Unix socket path (default /tmp/mpvsocket). Blank "
+                "uses the platform default. Not a browsable file.",
+         "warn": "Advanced: named pipe (Windows) / Unix socket (Linux/macOS), not a regular file."},
     ]),
 ]
 
