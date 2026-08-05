@@ -100,7 +100,14 @@ def apply_theme(root):
         style.configure(widget, foreground=p["fg"], fieldbackground=p["entry_bg"],
                         insertcolor=p["fg"])
         style.map(widget, fieldbackground=[("readonly", p["entry_bg"])])
-    style.configure("Vertical.TScrollbar", background=p["entry_bg"],
-                    troughcolor=p["bg"], bordercolor=p["border"], arrowcolor=p["fg"])
+    # Scrollbar: colour the trough, thumb and arrows explicitly. Under 'clam'
+    # the arrows render as empty boxes if their colour isn't set, so set it on
+    # both the base and vertical styles.
+    for sb in ("TScrollbar", "Vertical.TScrollbar"):
+        style.configure(sb, background=p["entry_bg"], troughcolor=p["bg"],
+                        bordercolor=p["border"], arrowcolor=p["fg"], arrowsize=13)
+        style.map(sb,
+                  background=[("active", p["select"]), ("disabled", p["bg"])],
+                  arrowcolor=[("disabled", p["muted"])])
 
     return palette

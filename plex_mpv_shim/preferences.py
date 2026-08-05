@@ -135,7 +135,7 @@ SETTINGS_SCHEMA = [
          "values": _LOG_LEVELS},
         {"key": "log_decisions",  "label": "Log stream decisions", "kind": "bool"},
     ]),
-    ("Video (shaders/SVP)", [
+    ("Video", [
         {"key": "shader_pack_enable",   "label": "Enable shader pack",   "kind": "bool", "restart": True},
         {"key": "shader_pack_custom",   "label": "Custom shader pack",   "kind": "bool", "restart": True,
          "depends_on": "shader_pack_enable",
@@ -242,7 +242,7 @@ class _ScrollFrame(ttk.Frame):
 
     def __init__(self, parent, bg=None):
         super().__init__(parent)
-        canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
+        canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0, height=1)
         if bg:
             canvas.configure(bg=bg)
         vsb = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
@@ -253,17 +253,23 @@ class _ScrollFrame(ttk.Frame):
         self.inner = ttk.Frame(canvas)
         window = canvas.create_window((0, 0), window=self.inner, anchor="nw")
 
-        def _on_configure(_event):
+        def _sync(_event=None):
+            # Match the inner frame's width to the canvas and set the scroll
+            # region to exactly the content -- otherwise the thumb is mis-sized
+            # and you can scroll into empty space past the content.
+            canvas.itemconfigure(window, width=canvas.winfo_width())
             canvas.configure(scrollregion=canvas.bbox("all"))
-        self.inner.bind("<Configure>", _on_configure)
+        self.inner.bind("<Configure>", _sync)
+        canvas.bind("<Configure>", _sync)
 
-        def _on_canvas(event):
-            canvas.itemconfigure(window, width=event.width)
-        canvas.bind("<Configure>", _on_canvas)
-
+        # Bind the wheel only while the pointer is over this canvas, so the tabs
+        # don't fight over one global binding, and only scroll when the content
+        # actually overflows.
         def _on_wheel(event):
-            canvas.yview_scroll(int(-event.delta / 120), "units")
-        canvas.bind_all("<MouseWheel>", _on_wheel)
+            if self.inner.winfo_height() > canvas.winfo_height():
+                canvas.yview_scroll(int(-event.delta / 120), "units")
+        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _on_wheel))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
 
 
 class PreferencesWindowProcess(Process):
@@ -280,16 +286,44 @@ class PreferencesWindowProcess(Process):
         root = tk.Tk()
         self.root = root
         root.title("Plex MPV Shim - Preferences")
-        root.geometry("560x620")
+        root.geometry("620x620")
         self.palette = apply_theme(root)
+        p = self.palette
 
-        notebook = ttk.Notebook(root)
-        notebook.pack(fill="both", expand=True, padx=6, pady=6)
+        # Left-hand category list + stacked content panes. A vertical list never
+        # truncates horizontally the way a row of notebook tabs does when the
+        # window is narrow, and it scales to any number of categories.
+        body = ttk.Frame(root)
+        body.pack(fill="both", expand=True, padx=6, pady=6)
 
+        categories = [c for c, _f in SETTINGS_SCHEMA]
+        selector = tk.Listbox(body, exportselection=False, activestyle="none",
+                              width=16, highlightthickness=0, borderwidth=0)
+        selector.configure(bg=p["entry_bg"], fg=p["fg"],
+                           selectbackground=p["select"], selectforeground="#ffffff")
+        selector.pack(side="left", fill="y")
+        for category in categories:
+            selector.insert(tk.END, "  " + category)
+
+        content = ttk.Frame(body)
+        content.pack(side="left", fill="both", expand=True, padx=(6, 0))
+        content.rowconfigure(0, weight=1)
+        content.columnconfigure(0, weight=1)
+
+        self._panes = {}
         for category, fields in SETTINGS_SCHEMA:
-            tab = _ScrollFrame(notebook, bg=self.palette["bg"])
-            notebook.add(tab, text=category)
-            self._build_fields(tab.inner, fields)
+            pane = _ScrollFrame(content, bg=p["bg"])
+            pane.grid(row=0, column=0, sticky="nsew")
+            self._build_fields(pane.inner, fields)
+            self._panes[category] = pane
+
+        def _on_select(_event=None):
+            sel = selector.curselection()
+            if sel:
+                self._panes[categories[sel[0]]].tkraise()
+        selector.bind("<<ListboxSelect>>", _on_select)
+        selector.selection_set(0)
+        self._panes[categories[0]].tkraise()
 
         # Grey out settings that don't apply to the selected backend (e.g. the
         # external-mpv options when the built-in player is in use).

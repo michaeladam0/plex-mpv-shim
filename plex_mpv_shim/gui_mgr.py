@@ -16,6 +16,29 @@ APP_NAME = "plex-mpv-shim"
 from .conffile import confdir
 from .conf import settings
 from .preferences import PreferencesWindow, RestartPromptWindow, RESTART_KEYS
+from .gui_theme import detect_dark
+
+
+def _enable_win_dark_menus():
+    """
+    Opt this process into dark mode so the native tray context menu renders
+    dark on Windows 10 1903+. The menu is drawn by the OS (pystray uses a
+    classic Win32 popup), so this uxtheme call is the only lever; it's
+    undocumented, hence best-effort and wrapped.
+    """
+    if not sys.platform.startswith("win"):
+        return
+    if not detect_dark():
+        return
+    try:
+        import ctypes
+        uxtheme = ctypes.windll.uxtheme
+        # Ordinal 135 = SetPreferredAppMode; 2 = ForceDark. 136 = FlushMenuThemes.
+        set_preferred_app_mode = uxtheme[135]
+        set_preferred_app_mode(2)
+        uxtheme[136]()
+    except Exception:
+        log.debug("Could not enable dark tray menu.", exc_info=True)
 
 if (sys.platform.startswith("win32") or sys.platform.startswith("cygwin")) and getattr(sys, 'frozen', False):
     # Detect if bundled via pyinstaller.
@@ -338,6 +361,8 @@ class STrayProcess(Process):
         Process.__init__(self)
 
     def run(self):
+        _enable_win_dark_menus()
+
         def get_wrapper(command):
             def wrapper():
                 self.r_queue.put((command, None))
