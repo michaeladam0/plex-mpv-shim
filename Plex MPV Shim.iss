@@ -37,6 +37,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
+[InstallDelete]
+; Wipe the previous install's payload before copying the new one. The exe was
+; renamed (run.exe -> plex-mpv-shim.exe) and PyInstaller's bundled files can
+; change between versions, so overwriting by name would leave stale assets
+; behind. Safe to clear: user config lives in %AppData%\plex-mpv-shim, not here.
+Type: filesandordirs; Name: "{app}\*"
+
 [Files]
 Source: "dist\plex-mpv-shim\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
