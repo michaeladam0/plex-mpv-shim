@@ -283,7 +283,11 @@ APP_NAME = "plex-mpv-shim"
 
 
 def _read_pack_options(pack_dir):
-    """Return (profile_names, subtypes) from a shader pack dir, or None."""
+    """
+    Return (profile_pairs, subtypes) from a shader pack dir, or None.
+    ``profile_pairs`` is a list of (key, display_name) -- the dropdown shows the
+    display name (e.g. "FSRCNNX") but stores the key (e.g. "generic").
+    """
     for name in ("pack-next.json", "pack.json"):
         pack_json = os.path.join(pack_dir, name)
         if os.path.exists(pack_json):
@@ -293,11 +297,13 @@ def _read_pack_options(pack_dir):
             except Exception:
                 return None
             profiles = pack.get("profiles") or {}
+            pairs = [(key, profile.get("displayname") or key)
+                     for key, profile in profiles.items()]
             subtypes = set()
             for profile in profiles.values():
                 for subtype in profile.get("subtype", []):
                     subtypes.add(subtype)
-            return list(profiles), sorted(subtypes)
+            return pairs, sorted(subtypes)
     return None
 
 
@@ -307,7 +313,8 @@ def load_shader_options(initial):
     the same pack the player would (custom pack from the config dir when that's
     enabled and present, otherwise the built-in one).
 
-    Returns (profile_names, subtypes, custom_available).
+    Returns (profile_pairs, subtypes, custom_available), where profile_pairs is
+    a list of (key, display_name).
     """
     try:
         from .utils import get_resource
@@ -541,6 +548,11 @@ class PreferencesWindowProcess(Process):
         self._dynamic_values = {}
         self._field_notes = {}
         self._info_photo = None
+        # For fields whose dropdown shows a display label but stores a different
+        # value (the shader profile): display_label -> stored_value.
+        self._value_maps = {}
+        # key -> display name, for cross-referencing in the shader guide.
+        self._profile_displaynames = {}
         Process.__init__(self)
 
     def run(self):
@@ -561,12 +573,23 @@ class PreferencesWindowProcess(Process):
         self._info_photo = self._build_info_photo()
 
         # Populate the shader dropdowns from the pack that would actually be
-        # used, and note whether a custom pack exists in the config dir.
-        profiles, subtypes, custom_available = load_shader_options(self.initial)
-        profile_values = [""] + list(profiles)
+        # used, and note whether a custom pack exists in the config dir. The
+        # profile dropdown shows friendly display names ("FSRCNNX") but stores
+        # the profile key ("generic").
+        profile_pairs, subtypes, custom_available = load_shader_options(self.initial)
+        profile_values = [""]
+        disp_to_key = {"": ""}
+        for key, display in profile_pairs:
+            profile_values.append(display)
+            disp_to_key[display] = key
+            self._profile_displaynames[key] = display
         cur = self.initial.get("shader_pack_profile")
-        if cur and cur not in profile_values:
+        if cur and cur not in self._profile_displaynames:
+            # A stored profile not in the current pack: keep it selectable.
             profile_values.append(cur)
+            disp_to_key[cur] = cur
+        self._value_maps["shader_pack_profile"] = disp_to_key
+
         subtype_values = list(subtypes)
         cur = self.initial.get("shader_pack_subtype")
         if cur and cur not in subtype_values:
@@ -736,7 +759,17 @@ class PreferencesWindowProcess(Process):
                 widget = ttk.Checkbutton(parent, variable=var)
                 widget.grid(row=row, column=1, sticky="w", padx=8)
             elif kind == "choice":
-                var = tk.StringVar(value="" if value is None else str(value))
+                # If the field stores a value different from its display label
+                # (shader profile), show the label for the stored value.
+                vmap = self._value_maps.get(key)
+                if vmap:
+                    target = value if value is not None else ""
+                    initial_str = next((d for d, k in vmap.items() if k == target), None)
+                    if initial_str is None:
+                        initial_str = "" if value is None else str(value)
+                else:
+                    initial_str = "" if value is None else str(value)
+                var = tk.StringVar(value=initial_str)
                 values = field.get("values") or self._dynamic_values.get(
                     field.get("values_from"), [])
                 if field.get("guide") == "shaders":
@@ -787,8 +820,11 @@ class PreferencesWindowProcess(Process):
                 pane.register_wrap(summ)
                 row += 1
 
-                def _update_summary(*_args, _var=var, _lbl=summ):
-                    text = summary_for(_var.get())
+                def _update_summary(*_args, _var=var, _lbl=summ, _key=key):
+                    raw = _var.get()
+                    vmap = self._value_maps.get(_key)
+                    profile_key = vmap.get(raw, raw) if vmap else raw
+                    text = summary_for(profile_key)
                     if text:
                         _lbl.configure(text=text)
                         _lbl.grid()
@@ -877,6 +913,14 @@ class PreferencesWindowProcess(Process):
             perf.configure(text="Performance: %s      Visual impact: %s"
                            % (fam["perf"], fam["impact"]), fg=self._perf_color(fam["perf"]))
 
+            # Map the family's profile keys to what the dropdown shows, so the
+            # reader can connect a card to a selectable option.
+            labels = [self._profile_displaynames.get(k) for k in fam["profiles"]]
+            labels = [l for l in labels if l]
+            if labels:
+                add("In the dropdown: " + ", ".join(labels), fg=p["muted"],
+                    font=("TkDefaultFont", 8), pady=(0, 3))
+
             add("Best for: " + fam["best_for"], fg=p["muted"], pady=(0, 4))
             add("Pros\n" + "\n".join("  •  " + x for x in fam["pros"]),
                 fg="#4c9a5d", pady=(0, 2))
@@ -961,7 +1005,12 @@ class PreferencesWindowProcess(Process):
         for key, var in self._vars.items():
             field = ALL_FIELDS[key]
             current = self.initial.get(key)
-            value, err, warn = coerce_and_validate(field, var.get(), current)
+            raw = var.get()
+            # Translate a display label back to the stored value (shader profile).
+            vmap = self._value_maps.get(key)
+            if vmap is not None:
+                raw = vmap.get(raw, raw)
+            value, err, warn = coerce_and_validate(field, raw, current)
             if err:
                 errors.append(err)
                 continue

@@ -24,7 +24,9 @@ SHADER_FAMILIES = [
             "Doesn't reconstruct detail like neural upscalers.",
             "Over-sharpening can look slightly artificial.",
         ],
-        "note": "A sensible default if you're unsure where to start.",
+        "note": ("A sensible default if you're unsure where to start. Despite the "
+                 "Nvidia name it's an open shader that runs on any GPU (AMD/Intel "
+                 "included) — not Nvidia-only."),
         "profiles": ["nvscaler"],
     },
     {
@@ -41,7 +43,9 @@ SHADER_FAMILIES = [
             "Spatial only — no detail reconstruction.",
             "Can shimmer on fine textures.",
         ],
-        "note": "Similar niche to NIS — try both and keep whichever looks better to you.",
+        "note": ("Similar niche to NIS — try both and keep whichever looks better "
+                 "to you. Despite the AMD name the shader runs on any GPU, not "
+                 "just AMD."),
         "profiles": ["AMD FidelityFX Super Resolution"],
     },
     {
@@ -58,7 +62,8 @@ SHADER_FAMILIES = [
             "Does NOT upscale — sharpening only.",
             "Won't rescue heavily blurred or low-res sources.",
         ],
-        "note": "Use when the picture is soft but the resolution is already fine.",
+        "note": ("Use when the picture is soft but the resolution is already fine. "
+                 "Despite the AMD name the shader runs on any GPU."),
         "profiles": ["AMD FidelityFX Contrast Adaptive Sharpening"],
     },
     {
