@@ -535,6 +535,8 @@ class PreferencesWindowProcess(Process):
         Process.__init__(self)
 
     def run(self):
+        from .utils import set_process_title
+        set_process_title("Plex MPV Shim: Preferences")
         root = tk.Tk()
         self.root = root
         root.title("Plex MPV Shim - Preferences")
@@ -951,6 +953,8 @@ class RestartPromptProcess(Process):
         Process.__init__(self)
 
     def run(self):
+        from .utils import set_process_title
+        set_process_title("Plex MPV Shim: Restart")
         root = tk.Tk()
         self.root = root
         root.title("Restart Plex MPV Shim")

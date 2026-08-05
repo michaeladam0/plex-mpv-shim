@@ -24,6 +24,9 @@ def update_gdm_settings(name=None, value=None):
         settings.http_port, "Plex MPV Shim", "1.0")
 
 def main():
+    from .utils import set_process_title
+    set_process_title("Plex MPV Shim: Main")
+
     conf_file = conffile.get(APP_NAME,'conf.json')
     if os.path.isfile('settings.dat'):
         settings.migrate_config('settings.dat', conf_file)

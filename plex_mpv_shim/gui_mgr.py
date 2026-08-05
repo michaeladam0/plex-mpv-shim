@@ -165,9 +165,11 @@ class LoggerWindowProcess(Process):
         self.text.after(100, self.update)
 
     def run(self):
+        from .utils import set_process_title
+        set_process_title("Plex MPV Shim: Log")
         root = tk.Tk()
         self.root = root
-        root.title("Application Log")
+        root.title("Plex MPV Shim - Log")
         text = tk.Text(root)
         text.pack(side=tk.LEFT, fill=tk.BOTH, expand = tk.YES)
         text.config(wrap=tk.WORD)
@@ -361,6 +363,8 @@ class STrayProcess(Process):
         Process.__init__(self)
 
     def run(self):
+        from .utils import set_process_title
+        set_process_title("Plex MPV Shim: Tray")
         _enable_win_dark_menus()
 
         def get_wrapper(command):

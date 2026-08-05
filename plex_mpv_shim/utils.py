@@ -18,6 +18,22 @@ PLEX_TOKEN_RE = re.compile("(token|X-Plex-Token)=[^&]*")
 log = logging.getLogger("utils")
 plex_eph_tokens = {}
 plex_sessions = {}
+
+
+def set_process_title(title):
+    """
+    Label this process so its role is identifiable in process tools. All the
+    helper processes run from the same executable, so Task Manager shows them
+    all with the same name; setproctitle rewrites the command line (the PEB
+    command line on Windows), which Task Manager's 'Command line' column and
+    tools like Process Explorer display. Best-effort: a no-op if setproctitle
+    isn't installed.
+    """
+    try:
+        import setproctitle
+        setproctitle.setproctitle(title)
+    except Exception:
+        log.debug("Could not set process title.", exc_info=True)
 plex_transcode_sessions = {}
 
 class Timer(object):
