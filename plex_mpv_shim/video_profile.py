@@ -175,4 +175,18 @@ class VideoProfileManager:
             # too and lands on the wrong (middle) item.
             if profile_name == self.current_profile:
                 selected = len(profile_option_list) - 1
+
+        # Downloaded (non-bundled) profiles, e.g. ArtCNN. Only the ones already
+        # fetched are listed -- downloading is done from the preferences window,
+        # not the on-screen menu.
+        from . import downloadable_shaders
+        for entry in downloadable_shaders.DOWNLOADABLE:
+            if not downloadable_shaders.is_downloaded(entry["key"]):
+                continue
+            profile_option_list.append(
+                (entry["display"], self.menu_handle, entry["key"])
+            )
+            if entry["key"] == self.current_profile:
+                selected = len(profile_option_list) - 1
+
         self.menu.put_menu("Select Shader Profile", profile_option_list, selected)
