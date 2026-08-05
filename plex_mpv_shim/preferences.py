@@ -21,6 +21,7 @@ from tkinter import ttk, messagebox
 from multiprocessing import Process, Queue
 
 from .gui_theme import apply_theme
+from .shader_guide import SHADER_FAMILIES, summary_for
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -247,8 +248,10 @@ SETTINGS_SCHEMA = [
                 "next time."},
         {"key": "shader_pack_profile",  "label": "Shader profile",       "kind": "choice",
          "nullable": True, "values_from": "profiles", "depends_on": "shader_pack_enable",
+         "guide": "shaders",
          "tip": "Shader profile to load on startup, from the active shader "
-                "pack. Blank = none."},
+                "pack. Blank = none. See the Shader guide button for a "
+                "comparison of the options."},
         {"key": "shader_pack_subtype",  "label": "Shader subtype",       "kind": "choice",
          "values_from": "subtypes", "depends_on": "shader_pack_enable",
          "tip": "Which variant of the shader profiles to use (the quality tier "
@@ -736,8 +739,20 @@ class PreferencesWindowProcess(Process):
                 var = tk.StringVar(value="" if value is None else str(value))
                 values = field.get("values") or self._dynamic_values.get(
                     field.get("values_from"), [])
-                widget = ttk.Combobox(parent, textvariable=var, values=values)
-                widget.grid(row=row, column=1, sticky="ew", padx=8)
+                if field.get("guide") == "shaders":
+                    # Combobox + a button opening the shader comparison dialog.
+                    box = ttk.Frame(parent)
+                    box.grid(row=row, column=1, sticky="ew", padx=8)
+                    box.columnconfigure(0, weight=1)
+                    widget = ttk.Combobox(box, textvariable=var, values=values)
+                    widget.grid(row=0, column=0, sticky="ew")
+                    guide_btn = ttk.Button(box, text="Shader guide", width=13,
+                                           command=self._open_shader_guide)
+                    guide_btn.grid(row=0, column=1, padx=(5, 0))
+                    self._widgets[key + "__guide"] = guide_btn
+                else:
+                    widget = ttk.Combobox(parent, textvariable=var, values=values)
+                    widget.grid(row=row, column=1, sticky="ew", padx=8)
             elif kind == "path":
                 # Entry + a Browse button that opens the OS file/folder picker.
                 var = tk.StringVar(value="" if value is None else str(value))
@@ -764,6 +779,24 @@ class PreferencesWindowProcess(Process):
             self._widgets[key] = widget
             row += 1
 
+            if field.get("guide") == "shaders":
+                # A one-line summary of the selected profile, updated live.
+                summ = tk.Label(parent, fg=self.palette["muted"], bg=self.palette["bg"],
+                                anchor="w", justify="left", font=("TkDefaultFont", 8))
+                summ.grid(row=row, column=0, columnspan=2, sticky="ew", padx=8)
+                pane.register_wrap(summ)
+                row += 1
+
+                def _update_summary(*_args, _var=var, _lbl=summ):
+                    text = summary_for(_var.get())
+                    if text:
+                        _lbl.configure(text=text)
+                        _lbl.grid()
+                    else:
+                        _lbl.grid_remove()
+                var.trace_add("write", _update_summary)
+                _update_summary()
+
             warn = field.get("warn")
             if warn:
                 lbl = tk.Label(parent, text="⚠ " + warn, fg=self.palette["warn"],
@@ -781,6 +814,85 @@ class PreferencesWindowProcess(Process):
                 nlbl.grid(row=row, column=0, columnspan=2, sticky="ew", padx=8)
                 pane.register_wrap(nlbl)
                 row += 1
+
+    @staticmethod
+    def _perf_color(perf):
+        low = perf.lower()
+        if "light" in low and "heavy" not in low:
+            return "#3fa34d"   # green
+        if "very heavy" in low and "moderate" not in low:
+            return "#d9534f"   # red
+        return "#d0932e"       # amber
+
+    def _open_shader_guide(self):
+        # Single instance: focus the existing window if it's already open.
+        existing = getattr(self, "_guide_win", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except Exception:
+                pass
+
+        p = self.palette
+        win = tk.Toplevel(self.root)
+        self._guide_win = win
+        win.title("Shader Guide")
+        win.configure(bg=p["bg"])
+        try:
+            factor = max(1.0, float(self.root.tk.call("tk", "scaling")) * 0.75)
+        except Exception:
+            factor = 1.0
+        win.geometry("%dx%d" % (int(560 * factor), int(640 * factor)))
+
+        sf = _ScrollFrame(win, bg=p["bg"])
+        sf.pack(fill="both", expand=True)
+        inner = sf.inner
+        inner.columnconfigure(0, weight=1)
+
+        def add(text, *, font=None, fg=None, pady=(0, 0), bold=False, wrap=True):
+            lbl = tk.Label(inner, text=text, bg=p["bg"],
+                           fg=fg or p["fg"], anchor="w", justify="left",
+                           wraplength=460,
+                           font=font or ("TkDefaultFont", 9, "bold" if bold else "normal"))
+            lbl.grid(sticky="ew", padx=12, pady=pady)
+            if wrap:
+                sf.register_wrap(lbl)
+            return lbl
+
+        add("Base shader profiles compared. Ratings are rough and partly "
+            "subjective — use them to steer a choice, then judge by eye on your "
+            "own content and GPU.", fg=p["muted"], pady=(12, 4))
+
+        for fam in SHADER_FAMILIES:
+            ttk.Separator(inner, orient="horizontal").grid(
+                sticky="ew", padx=12, pady=(10, 6))
+            add(fam["name"], font=("TkDefaultFont", 11, "bold"), pady=(0, 2))
+
+            perf = tk.Label(inner, bg=p["bg"], anchor="w", justify="left",
+                            font=("TkDefaultFont", 9))
+            perf.grid(sticky="ew", padx=12, pady=(0, 2))
+            perf.configure(text="Performance: %s      Visual impact: %s"
+                           % (fam["perf"], fam["impact"]), fg=self._perf_color(fam["perf"]))
+
+            add("Best for: " + fam["best_for"], fg=p["muted"], pady=(0, 4))
+            add("Pros\n" + "\n".join("  •  " + x for x in fam["pros"]),
+                fg="#4c9a5d", pady=(0, 2))
+            add("Cons\n" + "\n".join("  •  " + x for x in fam["cons"]),
+                fg="#c9645f", pady=(0, 2))
+            if fam.get("note"):
+                add("Note: " + fam["note"], fg=p["muted"],
+                    font=("TkDefaultFont", 8), pady=(0, 4))
+
+        btns = ttk.Frame(win)
+        btns.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(btns, text="Close", command=win.destroy).pack(side="right")
+
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+        # Lay out now so the wrap labels size to the window immediately.
+        win.after(30, sf._apply_layout)
 
     def _browse_path(self, field, var):
         """Open the OS file/folder picker for a path field and store the result."""
@@ -827,8 +939,8 @@ class PreferencesWindowProcess(Process):
                     on = bool(ctrl_var.get())
                     for dep_key, want in dep_specs:
                         state = "normal" if on == want else "disabled"
-                        # The field widget plus its Browse button, if any.
-                        for wkey in (dep_key, dep_key + "__browse"):
+                        # The field widget plus its Browse / guide button, if any.
+                        for wkey in (dep_key, dep_key + "__browse", dep_key + "__guide"):
                             widget = self._widgets.get(wkey)
                             if widget is not None:
                                 try:
