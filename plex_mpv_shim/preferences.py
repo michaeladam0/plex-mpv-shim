@@ -37,120 +37,220 @@ _MPV_LOG_LEVELS  = ["fatal", "error", "warn", "info", "status", "v", "debug", "t
 SETTINGS_SCHEMA = [
     ("General", [
         {"key": "player_name",     "label": "Player name",              "kind": "str",
-         "help": "Name shown in the Plex cast menu."},
+         "tip": "The name this client shows as in the Plex 'Cast'/'Play on' menu."},
         {"key": "enable_gui",      "label": "Enable tray GUI",          "kind": "bool", "restart": True,
-         "help": "Disable to run headless (command-line only)."},
-        {"key": "enable_osc",      "label": "On-screen controls",       "kind": "bool"},
-        {"key": "sanitize_output", "label": "Hide tokens in logs",      "kind": "bool"},
-        {"key": "menu_mouse",      "label": "Mouse in menu",            "kind": "bool", "restart": True},
+         "tip": "Show the tray icon and its menus. Turn off to run headless "
+                "(command-line only, no tray)."},
+        {"key": "enable_osc",      "label": "On-screen controls",       "kind": "bool",
+         "tip": "Show mpv's on-screen playback controls (seek bar and buttons) "
+                "when you move the mouse over the video."},
+        {"key": "sanitize_output", "label": "Hide tokens in logs",      "kind": "bool",
+         "tip": "Redact Plex authentication tokens from the log output so logs "
+                "are safe to share."},
+        {"key": "menu_mouse",      "label": "Mouse in menu",            "kind": "bool", "restart": True,
+         "tip": "Allow the mouse to select and click items in the shim's "
+                "on-screen menu (loads mpv's mouse script)."},
         {"key": "client_profile",  "label": "Client profile",           "kind": "str",
-         "warn": "Advanced: identifies the client to Plex. Leave as-is unless you know why."},
+         "tip": "The capability profile advertised to Plex; it shapes the "
+                "server's transcode/direct-play decisions.",
+         "warn": "Advanced: leave as-is unless you know why you're changing it."},
         {"key": "client_uuid",     "label": "Client UUID",              "kind": "str", "restart": True,
+         "tip": "The unique identity this client reports to Plex.",
          "warn": "Advanced: changing this makes Plex treat this as a brand-new client. Rarely needed."},
     ]),
     ("Network", [
         {"key": "http_port",       "label": "HTTP port",                "kind": "port", "restart": True,
-         "help": "Local control port the Plex apps talk to.",
+         "tip": "The local TCP port the Plex apps connect to in order to "
+                "control this client.",
          "warn": "Must be free and reachable by your Plex clients."},
-        {"key": "allow_http",      "label": "Allow plain HTTP",         "kind": "bool", "restart": True},
-        {"key": "enable_play_queue", "label": "Enable play queues",     "kind": "bool"},
+        {"key": "allow_http",      "label": "Allow plain HTTP",         "kind": "bool", "restart": True,
+         "tip": "Accept control connections over plain HTTP in addition to "
+                "HTTPS. Usually only needed for older setups."},
+        {"key": "enable_play_queue", "label": "Enable play queues",     "kind": "bool",
+         "tip": "Use Plex play queues so next/previous and autoplay work across "
+                "a whole list rather than a single item."},
     ]),
     ("Playback", [
-        {"key": "auto_play",         "label": "Auto-play next",         "kind": "bool"},
-        {"key": "fullscreen",        "label": "Fullscreen",            "kind": "bool"},
-        {"key": "always_transcode",  "label": "Always transcode",      "kind": "bool"},
-        {"key": "auto_transcode",    "label": "Auto transcode",        "kind": "bool"},
-        {"key": "adaptive_transcode","label": "Adaptive transcode",    "kind": "bool"},
-        {"key": "direct_limit",      "label": "Limit direct play",     "kind": "bool"},
-        {"key": "transcode_kbps",    "label": "Transcode bitrate (kbps)", "kind": "int", "min": 1},
-        {"key": "audio_ac3passthrough", "label": "AC3 passthrough",    "kind": "bool"},
-        {"key": "audio_dtspassthrough", "label": "DTS passthrough",    "kind": "bool"},
+        {"key": "auto_play",         "label": "Auto-play next",         "kind": "bool",
+         "tip": "Automatically start the next item in the queue when the "
+                "current one finishes."},
+        {"key": "fullscreen",        "label": "Fullscreen",            "kind": "bool",
+         "tip": "Start playback in fullscreen."},
+        {"key": "always_transcode",  "label": "Always transcode",      "kind": "bool",
+         "tip": "Force the server to transcode every stream instead of ever "
+                "direct-playing the original file."},
+        {"key": "auto_transcode",    "label": "Auto transcode",        "kind": "bool",
+         "tip": "Let the server decide when to transcode based on the client "
+                "profile (the normal Plex behaviour)."},
+        {"key": "adaptive_transcode","label": "Adaptive transcode",    "kind": "bool",
+         "tip": "When transcoding, let the server auto-adjust quality to the "
+                "available bandwidth mid-stream."},
+        {"key": "direct_limit",      "label": "Limit direct play",     "kind": "bool",
+         "tip": "Transcode remote streams whose bitrate exceeds the transcode "
+                "bitrate below; direct-play anything under it."},
+        {"key": "transcode_kbps",    "label": "Transcode bitrate (kbps)", "kind": "int", "min": 1,
+         "tip": "Target/maximum transcode bitrate in kbps. Also the threshold "
+                "used by 'Limit direct play'."},
+        {"key": "audio_ac3passthrough", "label": "AC3 passthrough",    "kind": "bool",
+         "tip": "Advertise AC3 passthrough so the server sends AC3 audio "
+                "untouched. Needs a receiver that can decode AC3."},
+        {"key": "audio_dtspassthrough", "label": "DTS passthrough",    "kind": "bool",
+         "tip": "Advertise DTS passthrough so the server sends DTS audio "
+                "untouched. Needs a receiver that can decode DTS."},
     ]),
     ("Subtitles", [
-        {"key": "subtitle_size",     "label": "Subtitle size",         "kind": "int", "min": 1},
+        {"key": "subtitle_size",     "label": "Subtitle size",         "kind": "int", "min": 1,
+         "tip": "Subtitle size as a percentage (100 = mpv's default size)."},
         {"key": "subtitle_color",    "label": "Subtitle color",        "kind": "color",
-         "help": "Hex, e.g. #FFFFFFFF (with alpha)."},
+         "tip": "Subtitle colour as hex #AARRGGBB (alpha first), e.g. "
+                "#FFFFFFFF is opaque white."},
         {"key": "subtitle_position", "label": "Subtitle position",     "kind": "choice",
-         "values": ["bottom", "top", "middle"]},
+         "values": ["bottom", "top", "middle"],
+         "tip": "Where subtitles are anchored on screen."},
     ]),
     ("Skip", [
-        {"key": "skip_intro_always",   "label": "Always skip intros",   "kind": "bool"},
+        {"key": "skip_intro_always",   "label": "Always skip intros",   "kind": "bool",
+         "tip": "Automatically jump past intros the server has marked, with no "
+                "prompt."},
         {"key": "skip_intro_prompt",   "label": "Prompt to skip intros","kind": "bool",
          "depends_on": "skip_intro_always", "depends_value": False,
-         "help": "Ignored while intros are always skipped."},
-        {"key": "skip_credits_always", "label": "Always skip credits",  "kind": "bool"},
+         "tip": "Show a 'Skip intro' button instead of skipping automatically. "
+                "Ignored while 'Always skip intros' is on."},
+        {"key": "skip_credits_always", "label": "Always skip credits",  "kind": "bool",
+         "tip": "Automatically jump past end credits the server has marked, "
+                "with no prompt."},
         {"key": "skip_credits_prompt", "label": "Prompt to skip credits","kind": "bool",
          "depends_on": "skip_credits_always", "depends_value": False,
-         "help": "Ignored while credits are always skipped."},
+         "tip": "Show a 'Skip credits' button instead of skipping "
+                "automatically. Ignored while 'Always skip credits' is on."},
     ]),
     ("Commands", [
-        {"key": "pre_media_cmd",   "label": "Pre-media command",   "kind": "str", "nullable": True},
-        {"key": "media_ended_cmd", "label": "Media-ended command", "kind": "str", "nullable": True},
-        {"key": "stop_cmd",        "label": "Stop command",        "kind": "str", "nullable": True},
-        {"key": "idle_cmd",        "label": "Idle command",        "kind": "str", "nullable": True},
-        {"key": "idle_cmd_delay",  "label": "Idle delay (s)",      "kind": "int", "min": 0},
-        {"key": "idle_when_paused","label": "Idle when paused",    "kind": "bool"},
+        {"key": "pre_media_cmd",   "label": "Pre-media command",   "kind": "str", "nullable": True,
+         "tip": "Shell command run just before the player displays for each "
+                "item. The shim waits for it to finish."},
+        {"key": "media_ended_cmd", "label": "Media-ended command", "kind": "str", "nullable": True,
+         "tip": "Shell command run when all media has finished playing."},
+        {"key": "stop_cmd",        "label": "Stop command",        "kind": "str", "nullable": True,
+         "tip": "Shell command run after playback is stopped."},
+        {"key": "idle_cmd",        "label": "Idle command",        "kind": "str", "nullable": True,
+         "tip": "Shell command run after no activity for the idle delay below."},
+        {"key": "idle_cmd_delay",  "label": "Idle delay (s)",      "kind": "int", "min": 0,
+         "tip": "Seconds of inactivity before the client is considered idle "
+                "(triggers the idle command / stop-on-idle)."},
+        {"key": "idle_when_paused","label": "Idle when paused",    "kind": "bool",
+         "tip": "Count paused playback as inactivity, so the idle timer runs "
+                "while paused."},
         {"key": "stop_idle",       "label": "Stop on idle",        "kind": "bool",
          "depends_on": "idle_when_paused",
-         "help": "Only applies when “Idle when paused” is on."},
+         "tip": "When idle-while-paused triggers, stop playback entirely. "
+                "Only applies when 'Idle when paused' is on."},
     ]),
     ("Input", [
-        {"key": "media_key_seek", "label": "Media keys seek",  "kind": "bool"},
-        {"key": "seek_up",    "label": "Seek up (s)",    "kind": "int"},
-        {"key": "seek_down",  "label": "Seek down (s)",  "kind": "int"},
-        {"key": "seek_left",  "label": "Seek left (s)",  "kind": "int"},
-        {"key": "seek_right", "label": "Seek right (s)", "kind": "int"},
-        {"key": "kb_stop",       "label": "Key: stop",        "kind": "str", "restart": True},
-        {"key": "kb_prev",       "label": "Key: previous",    "kind": "str", "restart": True},
-        {"key": "kb_next",       "label": "Key: next",        "kind": "str", "restart": True},
-        {"key": "kb_watched",    "label": "Key: watched",     "kind": "str", "restart": True},
-        {"key": "kb_unwatched",  "label": "Key: unwatched",   "kind": "str", "restart": True},
-        {"key": "kb_menu",       "label": "Key: menu",        "kind": "str", "restart": True},
-        {"key": "kb_menu_esc",   "label": "Key: menu escape", "kind": "str", "restart": True},
-        {"key": "kb_menu_ok",    "label": "Key: menu ok",     "kind": "str", "restart": True},
-        {"key": "kb_menu_left",  "label": "Key: menu left",   "kind": "str", "restart": True},
-        {"key": "kb_menu_right", "label": "Key: menu right",  "kind": "str", "restart": True},
-        {"key": "kb_menu_up",    "label": "Key: menu up",     "kind": "str", "restart": True},
-        {"key": "kb_menu_down",  "label": "Key: menu down",   "kind": "str", "restart": True},
-        {"key": "kb_pause",      "label": "Key: pause",       "kind": "str", "restart": True},
-        {"key": "kb_debug",      "label": "Key: debug",       "kind": "str", "restart": True},
+        {"key": "media_key_seek", "label": "Media keys seek",  "kind": "bool",
+         "tip": "Make the Previous/Next media keys seek within the current item "
+                "(back 15s / forward 30s) instead of changing item."},
+        {"key": "seek_up",    "label": "Seek up (s)",    "kind": "int",
+         "tip": "Seconds to seek for the Up key (positive = forward)."},
+        {"key": "seek_down",  "label": "Seek down (s)",  "kind": "int",
+         "tip": "Seconds to seek for the Down key (negative = backward)."},
+        {"key": "seek_left",  "label": "Seek left (s)",  "kind": "int",
+         "tip": "Seconds to seek for the Left key (negative = backward)."},
+        {"key": "seek_right", "label": "Seek right (s)", "kind": "int",
+         "tip": "Seconds to seek for the Right key (positive = forward)."},
+        {"key": "kb_stop",       "label": "Key: stop",        "kind": "str", "restart": True,
+         "tip": "mpv key name that stops playback (e.g. 'q'). Blank = unbound."},
+        {"key": "kb_prev",       "label": "Key: previous",    "kind": "str", "restart": True,
+         "tip": "mpv key name that plays the previous item (e.g. '<')."},
+        {"key": "kb_next",       "label": "Key: next",        "kind": "str", "restart": True,
+         "tip": "mpv key name that plays the next item (e.g. '>')."},
+        {"key": "kb_watched",    "label": "Key: watched",     "kind": "str", "restart": True,
+         "tip": "mpv key name that marks the item watched and skips it."},
+        {"key": "kb_unwatched",  "label": "Key: unwatched",   "kind": "str", "restart": True,
+         "tip": "mpv key name that marks the item unwatched and quits it."},
+        {"key": "kb_menu",       "label": "Key: menu",        "kind": "str", "restart": True,
+         "tip": "mpv key name that opens/closes the shim's on-screen menu."},
+        {"key": "kb_menu_esc",   "label": "Key: menu escape", "kind": "str", "restart": True,
+         "tip": "mpv key name that goes back / closes the menu (e.g. 'esc')."},
+        {"key": "kb_menu_ok",    "label": "Key: menu ok",     "kind": "str", "restart": True,
+         "tip": "mpv key name that confirms the menu selection (e.g. 'enter')."},
+        {"key": "kb_menu_left",  "label": "Key: menu left",   "kind": "str", "restart": True,
+         "tip": "mpv key name for menu navigation left."},
+        {"key": "kb_menu_right", "label": "Key: menu right",  "kind": "str", "restart": True,
+         "tip": "mpv key name for menu navigation right."},
+        {"key": "kb_menu_up",    "label": "Key: menu up",     "kind": "str", "restart": True,
+         "tip": "mpv key name for menu navigation up."},
+        {"key": "kb_menu_down",  "label": "Key: menu down",   "kind": "str", "restart": True,
+         "tip": "mpv key name for menu navigation down."},
+        {"key": "kb_pause",      "label": "Key: pause",       "kind": "str", "restart": True,
+         "tip": "mpv key name that toggles pause (e.g. 'space')."},
+        {"key": "kb_debug",      "label": "Key: debug",       "kind": "str", "restart": True,
+         "tip": "mpv key name that toggles the mpv stats/debug overlay (e.g. '~')."},
     ]),
     ("MPV", [
-        {"key": "mpv_ext",        "label": "Use external mpv",     "kind": "bool", "restart": True},
+        {"key": "mpv_ext",        "label": "Use external mpv",     "kind": "bool", "restart": True,
+         "tip": "Play through a separate external mpv process instead of the "
+                "built-in embedded player."},
         {"key": "mpv_ext_path",   "label": "External mpv path",    "kind": "path", "nullable": True,
          "restart": True, "check_exists": True, "depends_on": "mpv_ext",
          "section": "External mpv (only used when “Use external mpv” is on)",
-         "help": "Leave blank to use mpv on PATH."},
+         "tip": "Path to the external mpv executable. Leave blank to use the "
+                "mpv found on your PATH."},
         {"key": "mpv_ext_ipc",    "label": "External mpv IPC path", "kind": "str", "nullable": True,
          "restart": True, "depends_on": "mpv_ext",
+         "tip": "The IPC pipe/socket the shim uses to control the external mpv.",
          "warn": "Advanced: named pipe / socket path for the external mpv IPC."},
         {"key": "mpv_ext_start",  "label": "Start external mpv",   "kind": "bool", "restart": True,
-         "depends_on": "mpv_ext"},
+         "depends_on": "mpv_ext",
+         "tip": "Have the shim launch the mpv process itself. Turn off to "
+                "attach to an mpv you already started at the IPC path above "
+                "(the shim won't spawn one)."},
         {"key": "mpv_ext_no_ovr", "label": "No mpv config override","kind": "bool", "restart": True,
-         "depends_on": "mpv_ext"},
+         "depends_on": "mpv_ext",
+         "tip": "Don't apply the shim's bundled mpv.conf/input.conf to the "
+                "external mpv; use mpv's own user config instead."},
         {"key": "mpv_log_level",  "label": "mpv log level",        "kind": "choice",
-         "values": _MPV_LOG_LEVELS, "restart": True},
-        {"key": "mpv_log_file",   "label": "Log mpv to file",      "kind": "bool", "restart": True},
+         "values": _MPV_LOG_LEVELS, "restart": True,
+         "tip": "Verbosity of mpv's messages forwarded into the shim log."},
+        {"key": "mpv_log_file",   "label": "Log mpv to file",      "kind": "bool", "restart": True,
+         "tip": "Also write mpv's own log from launch to mpv.log in the config "
+                "folder (captures startup before the shim attaches)."},
         {"key": "app_log_level",  "label": "App log level",        "kind": "choice",
-         "values": _LOG_LEVELS},
-        {"key": "log_decisions",  "label": "Log stream decisions", "kind": "bool"},
+         "values": _LOG_LEVELS,
+         "tip": "Verbosity of the shim's own log."},
+        {"key": "log_decisions",  "label": "Log stream decisions", "kind": "bool",
+         "tip": "Log the chosen play URL and transcode decision for each item "
+                "(useful for debugging playback)."},
     ]),
     ("Video", [
-        {"key": "shader_pack_enable",   "label": "Enable shader pack",   "kind": "bool", "restart": True},
+        {"key": "shader_pack_enable",   "label": "Enable shader pack",   "kind": "bool", "restart": True,
+         "tip": "Enable the video shader/profile system (quality presets and "
+                "custom mpv shaders)."},
         {"key": "shader_pack_custom",   "label": "Custom shader pack",   "kind": "bool", "restart": True,
          "depends_on": "shader_pack_enable",
-         "section": "Shader pack (only used when “Enable shader pack” is on)"},
+         "section": "Shader pack (only used when “Enable shader pack” is on)",
+         "tip": "Use your own editable copy of the shader pack in the config "
+                "folder instead of the bundled one."},
         {"key": "shader_pack_remember", "label": "Remember shader choice","kind": "bool",
-         "depends_on": "shader_pack_enable"},
+         "depends_on": "shader_pack_enable",
+         "tip": "Remember the last shader profile you picked and re-apply it "
+                "next time."},
         {"key": "shader_pack_profile",  "label": "Shader profile",       "kind": "str", "nullable": True,
-         "depends_on": "shader_pack_enable"},
+         "depends_on": "shader_pack_enable",
+         "tip": "Shader profile to load on startup. Blank = none."},
         {"key": "shader_pack_subtype",  "label": "Shader subtype",       "kind": "str",
-         "depends_on": "shader_pack_enable"},
-        {"key": "svp_enable",  "label": "Enable SVP",     "kind": "bool", "restart": True},
+         "depends_on": "shader_pack_enable",
+         "tip": "Which variant of the shader profiles to use (e.g. a quality "
+                "tier such as lq/mq/hq)."},
+        {"key": "svp_enable",  "label": "Enable SVP",     "kind": "bool", "restart": True,
+         "tip": "Integrate with SmoothVideo Project (SVP) for motion "
+                "interpolation / frame smoothing."},
         {"key": "svp_url",     "label": "SVP URL",        "kind": "str", "depends_on": "svp_enable",
-         "section": "SVP (only used when “Enable SVP” is on)"},
+         "section": "SVP (only used when “Enable SVP” is on)",
+         "tip": "Base URL of the SVP web API the shim talks to."},
         {"key": "svp_socket",  "label": "SVP socket",     "kind": "str", "nullable": True, "restart": True,
          "depends_on": "svp_enable",
+         "tip": "The IPC socket/pipe SVP uses to talk to mpv. Blank = a "
+                "platform default.",
          "warn": "Advanced: SVP IPC socket path."},
     ]),
 ]
@@ -235,6 +335,57 @@ def coerce_and_validate(field, raw, current):
     if field.get("nullable") and s.strip() == "":
         return None, None, None
     return s, None, None
+
+
+class _Tooltip:
+    """A hover tooltip for a widget, themed to match the window."""
+
+    def __init__(self, widget, text, palette, delay=450):
+        self.widget = widget
+        self.text = text
+        self.palette = palette
+        self.delay = delay
+        self._after_id = None
+        self._tip = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _event=None):
+        self._cancel()
+        self._after_id = self.widget.after(self.delay, self._show)
+
+    def _cancel(self):
+        if self._after_id is not None:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def _show(self):
+        if self._tip is not None or not self.text:
+            return
+        try:
+            x = self.widget.winfo_pointerx() + 14
+            y = self.widget.winfo_pointery() + 18
+        except Exception:
+            return
+        self._tip = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry("+%d+%d" % (x, y))
+        tk.Label(tw, text=self.text, justify="left", wraplength=320,
+                 bg=self.palette["entry_bg"], fg=self.palette["fg"],
+                 relief="solid", borderwidth=1, padx=6, pady=4).pack()
+
+    def _hide(self, _event=None):
+        self._cancel()
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except Exception:
+                pass
+            self._tip = None
 
 
 class _ScrollFrame(ttk.Frame):
@@ -368,7 +519,9 @@ class PreferencesWindowProcess(Process):
                 hdr.grid(row=row, column=0, columnspan=2, sticky="w", padx=8, pady=(12, 2))
                 row += 1
 
-            ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=8, pady=4)
+            # A trailing "ⓘ" hints that hovering the row reveals a tooltip.
+            row_label = ttk.Label(parent, text=label + "  ⓘ", cursor="question_arrow")
+            row_label.grid(row=row, column=0, sticky="w", padx=8, pady=4)
 
             if kind == "bool":
                 var = tk.BooleanVar(value=bool(value))
@@ -383,16 +536,16 @@ class PreferencesWindowProcess(Process):
                 widget = ttk.Entry(parent, textvariable=var)
                 widget.grid(row=row, column=1, sticky="ew", padx=8)
 
+            tip = field.get("tip")
+            if tip:
+                _Tooltip(row_label, tip, self.palette)
+                _Tooltip(widget, tip, self.palette)
+
             self._vars[key] = var
             self._widgets[key] = widget
             row += 1
 
-            note = field.get("help")
             warn = field.get("warn")
-            if note:
-                ttk.Label(parent, text=note, foreground=self.palette["muted"]).grid(
-                    row=row, column=1, sticky="w", padx=8)
-                row += 1
             if warn:
                 lbl = tk.Label(parent, text="⚠ " + warn, fg=self.palette["warn"],
                                bg=self.palette["bg"],
