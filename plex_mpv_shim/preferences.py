@@ -112,13 +112,16 @@ SETTINGS_SCHEMA = [
     ("MPV", [
         {"key": "mpv_ext",        "label": "Use external mpv",     "kind": "bool", "restart": True},
         {"key": "mpv_ext_path",   "label": "External mpv path",    "kind": "path", "nullable": True,
-         "restart": True, "check_exists": True,
+         "restart": True, "check_exists": True, "depends_on": "mpv_ext",
+         "section": "External mpv (only used when “Use external mpv” is on)",
          "help": "Leave blank to use mpv on PATH."},
         {"key": "mpv_ext_ipc",    "label": "External mpv IPC path", "kind": "str", "nullable": True,
-         "restart": True,
+         "restart": True, "depends_on": "mpv_ext",
          "warn": "Advanced: named pipe / socket path for the external mpv IPC."},
-        {"key": "mpv_ext_start",  "label": "Start external mpv",   "kind": "bool", "restart": True},
-        {"key": "mpv_ext_no_ovr", "label": "No mpv config override","kind": "bool", "restart": True},
+        {"key": "mpv_ext_start",  "label": "Start external mpv",   "kind": "bool", "restart": True,
+         "depends_on": "mpv_ext"},
+        {"key": "mpv_ext_no_ovr", "label": "No mpv config override","kind": "bool", "restart": True,
+         "depends_on": "mpv_ext"},
         {"key": "mpv_log_level",  "label": "mpv log level",        "kind": "choice",
          "values": _MPV_LOG_LEVELS, "restart": True},
         {"key": "mpv_log_file",   "label": "Log mpv to file",      "kind": "bool", "restart": True},
@@ -257,6 +260,7 @@ class PreferencesWindowProcess(Process):
         self.initial = initial
         self.is_playing = is_playing
         self._vars = {}
+        self._widgets = {}
         Process.__init__(self)
 
     def run(self):
@@ -273,6 +277,10 @@ class PreferencesWindowProcess(Process):
             tab = _ScrollFrame(notebook, bg=self.palette["bg"])
             notebook.add(tab, text=category)
             self._build_fields(tab.inner, fields)
+
+        # Grey out settings that don't apply to the selected backend (e.g. the
+        # external-mpv options when the built-in player is in use).
+        self._wire_dependencies()
 
         btns = ttk.Frame(root)
         btns.pack(fill="x", padx=6, pady=(0, 8))
@@ -306,20 +314,30 @@ class PreferencesWindowProcess(Process):
             value = self.initial.get(key)
             kind = field["kind"]
 
+            section = field.get("section")
+            if section:
+                hdr = tk.Label(parent, text=section, fg=self.palette["fg"],
+                               bg=self.palette["bg"], font=("TkDefaultFont", 9, "bold"))
+                hdr.grid(row=row, column=0, columnspan=2, sticky="w", padx=8, pady=(12, 2))
+                row += 1
+
             ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=8, pady=4)
 
             if kind == "bool":
                 var = tk.BooleanVar(value=bool(value))
-                ttk.Checkbutton(parent, variable=var).grid(row=row, column=1, sticky="w", padx=8)
+                widget = ttk.Checkbutton(parent, variable=var)
+                widget.grid(row=row, column=1, sticky="w", padx=8)
             elif kind == "choice":
                 var = tk.StringVar(value="" if value is None else str(value))
-                combo = ttk.Combobox(parent, textvariable=var, values=field["values"])
-                combo.grid(row=row, column=1, sticky="ew", padx=8)
+                widget = ttk.Combobox(parent, textvariable=var, values=field["values"])
+                widget.grid(row=row, column=1, sticky="ew", padx=8)
             else:
                 var = tk.StringVar(value="" if value is None else str(value))
-                ttk.Entry(parent, textvariable=var).grid(row=row, column=1, sticky="ew", padx=8)
+                widget = ttk.Entry(parent, textvariable=var)
+                widget.grid(row=row, column=1, sticky="ew", padx=8)
 
             self._vars[key] = var
+            self._widgets[key] = widget
             row += 1
 
             note = field.get("help")
@@ -334,6 +352,40 @@ class PreferencesWindowProcess(Process):
                                font=("TkDefaultFont", 8, "bold"), wraplength=340, justify="left")
                 lbl.grid(row=row, column=1, sticky="w", padx=8)
                 row += 1
+
+    def _wire_dependencies(self):
+        """
+        Enable/disable fields that only apply in a given mode. Each dependent
+        field names a controlling boolean (``depends_on``); when that boolean is
+        off the dependent widgets are greyed out (and their unchanged values are
+        left as-is on save).
+        """
+        deps = {}
+        for key, field in ALL_FIELDS.items():
+            controller = field.get("depends_on")
+            if controller:
+                deps.setdefault(controller, []).append(key)
+
+        for controller, dependents in deps.items():
+            var = self._vars.get(controller)
+            if var is None:
+                continue
+
+            def make_cb(dep_keys, ctrl_var):
+                def cb(*_args):
+                    state = "normal" if bool(ctrl_var.get()) else "disabled"
+                    for dep_key in dep_keys:
+                        widget = self._widgets.get(dep_key)
+                        if widget is not None:
+                            try:
+                                widget.configure(state=state)
+                            except Exception:
+                                pass
+                return cb
+
+            callback = make_cb(dependents, var)
+            var.trace_add("write", callback)
+            callback()
 
     def _collect(self):
         """Returns (changed_dict, errors, warnings) after coercing every field."""
