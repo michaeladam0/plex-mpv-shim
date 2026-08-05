@@ -22,6 +22,7 @@ from multiprocessing import Process, Queue
 
 from .gui_theme import apply_theme
 from .shader_guide import SHADER_FAMILIES, summary_for
+from . import downloadable_shaders
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -220,6 +221,11 @@ SETTINGS_SCHEMA = [
          "depends_on": "mpv_ext",
          "tip": "Don't apply the shim's bundled mpv.conf/input.conf to the "
                 "external mpv; use mpv's own user config instead."},
+        {"key": "mpv_gpu_next",   "label": "Use gpu-next video output", "kind": "bool", "restart": True,
+         "tip": "Use mpv's newer 'gpu-next' video output for the built-in "
+                "player. Required by some shaders (e.g. ArtCNN). Very old GPUs "
+                "may not support it — turn off if video fails to start. Ignored "
+                "when using external mpv (set vo in your own mpv.conf instead)."},
         {"key": "mpv_log_level",  "label": "mpv log level",        "kind": "choice",
          "values": _MPV_LOG_LEVELS, "restart": True,
          "tip": "Verbosity of mpv's messages forwarded into the shim log."},
@@ -553,6 +559,11 @@ class PreferencesWindowProcess(Process):
         self._value_maps = {}
         # key -> display name, for cross-referencing in the shader guide.
         self._profile_displaynames = {}
+        # Shader-profile combobox state (for download-on-select handling).
+        self._profile_bundled = []
+        self._profile_combo = None
+        self._profile_var = None
+        self._profile_prev = ""
         Process.__init__(self)
 
     def run(self):
@@ -572,30 +583,22 @@ class PreferencesWindowProcess(Process):
         p = self.palette
         self._info_photo = self._build_info_photo()
 
-        # Populate the shader dropdowns from the pack that would actually be
-        # used, and note whether a custom pack exists in the config dir. The
-        # profile dropdown shows friendly display names ("FSRCNNX") but stores
-        # the profile key ("generic").
+        # Populate the shader dropdowns. The profile dropdown shows friendly
+        # display names ("FSRCNNX") but stores the profile key ("generic"), and
+        # also lists downloadable profiles (ArtCNN) with a "needs download"
+        # marker until they're fetched.
         profile_pairs, subtypes, custom_available = load_shader_options(self.initial)
-        profile_values = [""]
-        disp_to_key = {"": ""}
-        for key, display in profile_pairs:
-            profile_values.append(display)
-            disp_to_key[display] = key
-            self._profile_displaynames[key] = display
-        cur = self.initial.get("shader_pack_profile")
-        if cur and cur not in self._profile_displaynames:
-            # A stored profile not in the current pack: keep it selectable.
-            profile_values.append(cur)
-            disp_to_key[cur] = cur
+        self._profile_bundled = profile_pairs
+        values, disp_to_key, key_to_base = self._profile_values_and_map()
         self._value_maps["shader_pack_profile"] = disp_to_key
+        self._profile_displaynames = key_to_base
 
         subtype_values = list(subtypes)
         cur = self.initial.get("shader_pack_subtype")
         if cur and cur not in subtype_values:
             subtype_values.append(cur)
         self._dynamic_values = {
-            "profiles":  profile_values,
+            "profiles":  values,
             "subtypes":  subtype_values,
         }
         if custom_available:
@@ -783,6 +786,12 @@ class PreferencesWindowProcess(Process):
                                            command=self._open_shader_guide)
                     guide_btn.grid(row=0, column=1, padx=(5, 0))
                     self._widgets[key + "__guide"] = guide_btn
+                    # Track this combobox for download-on-select handling.
+                    self._profile_combo = widget
+                    self._profile_var = var
+                    self._profile_prev = var.get()
+                    widget.bind("<<ComboboxSelected>>",
+                                lambda _e: self._on_profile_selected())
                 else:
                     widget = ttk.Combobox(parent, textvariable=var, values=values)
                     widget.grid(row=row, column=1, sticky="ew", padx=8)
@@ -824,7 +833,13 @@ class PreferencesWindowProcess(Process):
                     raw = _var.get()
                     vmap = self._value_maps.get(_key)
                     profile_key = vmap.get(raw, raw) if vmap else raw
-                    text = summary_for(profile_key)
+                    entry = downloadable_shaders.by_key(profile_key)
+                    if entry:
+                        text = entry.get("summary")
+                        if not downloadable_shaders.is_downloaded(profile_key):
+                            text = (text or "") + "  (not downloaded yet)"
+                    else:
+                        text = summary_for(profile_key)
                     if text:
                         _lbl.configure(text=text)
                         _lbl.grid()
@@ -850,6 +865,105 @@ class PreferencesWindowProcess(Process):
                 nlbl.grid(row=row, column=0, columnspan=2, sticky="ew", padx=8)
                 pane.register_wrap(nlbl)
                 row += 1
+
+    def _profile_values_and_map(self):
+        """
+        Build the profile dropdown contents. Returns (values, disp_to_key,
+        key_to_base): the display strings (bundled first, then downloadable with
+        a marker until fetched), a map from each display label to its stored
+        key, and a map from key to its clean display name (for the guide).
+        """
+        values = [""]
+        disp_to_key = {"": ""}
+        key_to_base = {}
+        for key, display in self._profile_bundled:
+            values.append(display)
+            disp_to_key[display] = key
+            key_to_base[key] = display
+        for entry in downloadable_shaders.DOWNLOADABLE:
+            key = entry["key"]
+            base = entry["display"]
+            if downloadable_shaders.is_downloaded(key):
+                label = base
+            else:
+                label = base + "   ⭳ needs download"
+            values.append(label)
+            disp_to_key[label] = key
+            key_to_base[key] = base
+        cur = self.initial.get("shader_pack_profile")
+        if cur and cur not in key_to_base:
+            values.append(cur)
+            disp_to_key[cur] = cur
+            key_to_base[cur] = cur
+        return values, disp_to_key, key_to_base
+
+    def _rebuild_profile_values(self):
+        values, disp_to_key, key_to_base = self._profile_values_and_map()
+        self._value_maps["shader_pack_profile"] = disp_to_key
+        self._profile_displaynames = key_to_base
+        self._dynamic_values["profiles"] = values
+        if self._profile_combo is not None:
+            self._profile_combo["values"] = values
+
+    def _set_profile_by_key(self, key):
+        label = next((d for d, k in self._value_maps["shader_pack_profile"].items()
+                      if k == key), None)
+        if label is not None and self._profile_var is not None:
+            self._profile_var.set(label)
+
+    def _on_profile_selected(self):
+        """Handle picking a profile: download it if needed, warn about gpu-next."""
+        var = self._profile_var
+        disp = var.get()
+        key = self._value_maps["shader_pack_profile"].get(disp, disp)
+        entry = downloadable_shaders.by_key(key)
+
+        if entry and not downloadable_shaders.is_downloaded(key):
+            msg = ("%s is not downloaded yet.\n\nDownload it now from %s "
+                   "(%s licence)? The files are checksum-verified."
+                   % (entry["display"], entry["source"], entry["license"]))
+            if not messagebox.askyesno("Download shader", msg, parent=self.root):
+                var.set(self._profile_prev)
+                return
+            self.root.configure(cursor="watch")
+            self.root.update()
+            try:
+                downloadable_shaders.download(key)
+            except Exception as e:
+                self.root.configure(cursor="")
+                messagebox.showerror(
+                    "Download failed",
+                    "Could not download %s:\n%s" % (entry["display"], e),
+                    parent=self.root)
+                var.set(self._profile_prev)
+                return
+            self.root.configure(cursor="")
+            self._rebuild_profile_values()
+            self._set_profile_by_key(key)
+
+        if entry and entry.get("requires_gpu_next"):
+            self._warn_gpu_next(entry)
+
+        self._profile_prev = var.get()
+
+    def _warn_gpu_next(self, entry):
+        # Only warn when gpu-next won't actually be active for this profile.
+        ext_var = self._vars.get("mpv_ext")
+        gpu_var = self._vars.get("mpv_gpu_next")
+        using_ext = bool(ext_var.get()) if ext_var is not None else False
+        if using_ext:
+            messagebox.showwarning(
+                "gpu-next required",
+                "%s needs mpv's gpu-next output. With external mpv, add "
+                "'vo=gpu-next' to your own mpv.conf." % entry["display"],
+                parent=self.root)
+        elif gpu_var is not None and not bool(gpu_var.get()):
+            messagebox.showwarning(
+                "gpu-next required",
+                "%s needs mpv's gpu-next output. Enable 'Use gpu-next video "
+                "output' on the MPV tab; it takes effect after a restart."
+                % entry["display"],
+                parent=self.root)
 
     @staticmethod
     def _perf_color(perf):

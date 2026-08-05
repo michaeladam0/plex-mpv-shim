@@ -124,6 +124,29 @@ SHADER_FAMILIES = [
                      "anime4k-fast-a", "anime4k-fast-b", "anime4k-fast-c",
                      "anime4k-fast-aa", "anime4k-fast-bb", "anime4k-fast-ca"],
     },
+    {
+        "name": "ArtCNN (neural, downloadable)",
+        "perf": "C4F16: Moderate · C4F32: Heavy",
+        "impact": "High (modern detail reconstruction)",
+        "best_for": "High-quality upscaling of anime and general content; a "
+                    "current state-of-the-art shader upscaler.",
+        "pros": [
+            "Excellent detail — often beats the bundled upscalers.",
+            "Tiers: C4F16 (fast) vs C4F32 (quality).",
+            "'DS' variants also denoise and sharpen.",
+        ],
+        "cons": [
+            "Not bundled — downloaded on first use (MIT, from GitHub).",
+            "Requires mpv's gpu-next video output.",
+            "C4F32 is GPU-heavy.",
+        ],
+        "note": ("Downloaded on demand and checksum-verified into your config "
+                 "folder. Needs gpu-next: the built-in player has a "
+                 "'Use gpu-next video output' option; external mpv needs "
+                 "'vo=gpu-next' in your own mpv.conf."),
+        "profiles": ["artcnn-c4f16", "artcnn-c4f16-ds",
+                     "artcnn-c4f32", "artcnn-c4f32-ds"],
+    },
 ]
 
 # One-liners shown inline under the dropdown for the selected profile.

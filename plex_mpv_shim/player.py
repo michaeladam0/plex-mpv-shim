@@ -191,6 +191,12 @@ class PlayerManager(object):
                 }
             )
 
+        # Use the newer gpu-next video output for the built-in player. Some
+        # shaders (e.g. ArtCNN) require it. External mpv manages its own vo via
+        # the user's mpv.conf, so we don't force it there.
+        if settings.mpv_gpu_next and not is_using_ext_mpv:
+            mpv_options["vo"] = "gpu-next"
+
         if settings.menu_mouse:
             if is_using_ext_mpv:
                 mpv_options["script"] = get_resource("mouse.lua")

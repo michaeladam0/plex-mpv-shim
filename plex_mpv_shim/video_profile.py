@@ -85,6 +85,18 @@ class VideoProfileManager:
         if reset:
             self.unload_profile()
         log.info("Loading shader profile {0}.".format(profile_name))
+
+        # Downloaded (non-bundled) profiles apply their shader files directly by
+        # absolute path, bypassing the pack's profile table.
+        from . import downloadable_shaders
+        if downloadable_shaders.is_downloadable(profile_name):
+            if not downloadable_shaders.is_downloaded(profile_name):
+                log.error("Shader profile {0} is not downloaded.".format(profile_name))
+                return False
+            self.playerManager._player.glsl_shaders = downloadable_shaders.shader_paths(profile_name)
+            self.current_profile = profile_name
+            return True
+
         if profile_name not in self.profiles:
             log.error("Shader profile {0} does not exist.".format(profile_name))
             return False
